@@ -1,14 +1,6 @@
-use std::{fs, net::SocketAddr, path::Path};
-
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use url::Url;
-
-#[derive(Debug, Clone)]
-pub struct AppConfig {
-    pub listen_addr: SocketAddr,
-    pub rules: Rules,
-}
 
 #[derive(Debug, Clone)]
 pub struct Rules {
@@ -36,41 +28,10 @@ pub enum RuleKind {
 }
 
 #[derive(Debug, Deserialize)]
-struct RawConfig {
-    #[serde(default = "default_listen_addr")]
-    listen: String,
-    #[serde(default, alias = "rules")]
-    includes: Vec<RawRule>,
-    #[allow(dead_code)]
-    #[serde(default)]
-    classes: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawRule {
-    kind: Option<RuleKind>,
-    from: String,
-    to: String,
-}
-
-pub fn load_config(path: impl AsRef<Path>) -> Result<AppConfig> {
-    let source_path = path.as_ref();
-    let raw = fs::read_to_string(source_path)
-        .with_context(|| format!("failed to read config file {}", source_path.display()))?;
-    let parsed: RawConfig = serde_yaml::from_str(&raw)
-        .with_context(|| format!("failed to parse yaml from {}", source_path.display()))?;
-
-    let listen_addr = parsed
-        .listen
-        .parse()
-        .with_context(|| format!("invalid listen address `{}`", parsed.listen))?;
-    let rules = Rules::try_from(parsed.includes)?;
-
-    if rules.is_empty() {
-        bail!("config does not contain any include rules");
-    }
-
-    Ok(AppConfig { listen_addr, rules })
+pub struct RawRule {
+    pub kind: Option<RuleKind>,
+    pub from: String,
+    pub to: String,
 }
 
 impl Rules {
@@ -90,7 +51,10 @@ impl Rules {
     }
 
     pub fn target_hosts(&self) -> std::collections::HashSet<String> {
-        self.entries.iter().filter_map(|r| r.from.host_str().map(|s| s.to_string())).collect()
+        self.entries
+            .iter()
+            .filter_map(|r| r.from.host_str().map(|s| s.to_string()))
+            .collect()
     }
 }
 
@@ -170,10 +134,6 @@ impl Rule {
 
         Some(target)
     }
-}
-
-fn default_listen_addr() -> String {
-    "127.0.0.1:8787".to_string()
 }
 
 fn infer_rule_kind(from: &Url, raw_from: &str) -> RuleKind {

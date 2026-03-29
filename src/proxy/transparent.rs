@@ -26,7 +26,11 @@ pub(crate) async fn transparent_entry(
         return response;
     }
 
-    let scheme = if request.extensions().get::<crate::proxy::tls::TlsIntercepted>().is_some() {
+    let scheme = if request
+        .extensions()
+        .get::<crate::proxy::tls::TlsIntercepted>()
+        .is_some()
+    {
         "https"
     } else {
         "http"
@@ -34,7 +38,10 @@ pub(crate) async fn transparent_entry(
 
     let mut headers = request.headers().clone();
     if !headers.contains_key(super::shared::ORIGINAL_SCHEME_HEADER) {
-        headers.insert(super::shared::ORIGINAL_SCHEME_HEADER, axum::http::HeaderValue::from_static(scheme));
+        headers.insert(
+            super::shared::ORIGINAL_SCHEME_HEADER,
+            axum::http::HeaderValue::from_static(scheme),
+        );
     }
 
     let original = match resolve_transparent_target(&headers, request.uri()) {
@@ -51,4 +58,3 @@ pub(crate) async fn transparent_entry(
     )
     .await
 }
-

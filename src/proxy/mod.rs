@@ -13,7 +13,7 @@ use std::sync::Arc;
 use axum::{Router, routing::get};
 use reqwest::Client;
 
-use crate::rules::AppConfig;
+use crate::config::AppConfig;
 use state::AppState;
 
 pub async fn serve_explicit(config: AppConfig) -> anyhow::Result<()> {
@@ -25,7 +25,10 @@ pub async fn serve_explicit(config: AppConfig) -> anyhow::Result<()> {
     serve_app(app, listen_addr).await
 }
 
-pub async fn serve_transparent(config: AppConfig) -> anyhow::Result<()> {
+pub async fn serve_transparent(
+    config: AppConfig,
+    layer: crate::traffic::windivert::WinDivertLayer,
+) -> anyhow::Result<()> {
     let state = build_state(config.clone());
     let mut listen_addr = state.listen_addr;
     let proxy_redirect_addr = listen_addr;
@@ -34,7 +37,7 @@ pub async fn serve_transparent(config: AppConfig) -> anyhow::Result<()> {
         .fallback(transparent::transparent_entry)
         .with_state(state.clone());
 
-    // 解析我们需要拦截的目标域名为 IP，从而让 WinDivert 只拦截这些特定目标的流量
+    // Resolve target domain names to IPs so WinDivert can intercept traffic only to these specific destinations
     let mut target_ips = Vec::new();
     for host in config.rules.target_hosts() {
         if let Ok(addrs) = std::net::ToSocketAddrs::to_socket_addrs(&(host.as_str(), 0)) {
@@ -51,7 +54,10 @@ pub async fn serve_transparent(config: AppConfig) -> anyhow::Result<()> {
     let custom_filter = if target_ips.is_empty() {
         crate::traffic::windivert::default_filter(listen_addr, false)
     } else {
-        let ip_conds: Vec<String> = target_ips.iter().map(|ip| format!("ip.DstAddr == {}", ip)).collect();
+        let ip_conds: Vec<String> = target_ips
+            .iter()
+            .map(|ip| format!("ip.DstAddr == {}", ip))
+            .collect();
         format!(
             "outbound and ip and tcp and ( (!loopback and tcp.DstPort != {} and tcp.DstPort != {} and ({})) or tcp.SrcPort == {} or tcp.SrcPort == {} )",
             listen_addr.port(),
@@ -62,13 +68,18 @@ pub async fn serve_transparent(config: AppConfig) -> anyhow::Result<()> {
         )
     };
 
-    tracing::info!("WinDivert will filter out these resolved target IPs: {:?}", target_ips);
+    tracing::info!(
+        "WinDivert will filter out these resolved target IPs: {:?}",
+        target_ips
+    );
 
-    // 初始化并启动 WinDivert 流量拦截系统
+    // Initialize WinDivert
+    // TODO Compat with TUN/TAP mode in the future, which will require some changes to the filter and packet handling logic
     let wd_config = crate::traffic::windivert::WinDivertConfig {
         local_proxy_addr: proxy_redirect_addr,
         filter: custom_filter,
         sniff: false,
+        layer,
         ..Default::default()
     };
     let wd_runtime = crate::traffic::windivert::WinDivertRuntime::new(wd_config)?;
@@ -76,7 +87,8 @@ pub async fn serve_transparent(config: AppConfig) -> anyhow::Result<()> {
     tracing::info!("WinDivert capturing started: {}", wd_runtime.plan_summary());
 
     let mut https_listen_addr = listen_addr;
-    https_listen_addr.set_port(https_listen_addr.port() + 1);
+    let tls_port = config.tls_port.unwrap_or_else(|| listen_addr.port() + 1);
+    https_listen_addr.set_port(tls_port);
 
     let domains: Vec<String> = config.rules.target_hosts().into_iter().collect();
 
@@ -116,9 +128,3 @@ async fn serve_app(app: Router, listen_addr: std::net::SocketAddr) -> anyhow::Re
 
     Ok(())
 }
-
-
-
-
-
-

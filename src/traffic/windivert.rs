@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-
 use std::{
     env,
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -12,63 +11,69 @@ use anyhow::{Context, Result, bail, ensure};
 #[cfg(target_os = "windows")]
 use windivert::prelude::{WinDivertFlags, WinDivertParam};
 
-fn extract_host(payload: &[u8]) -> Option<String> {
-    if payload.len() > 6 {
-        for i in 0..payload.len().saturating_sub(6) {
-            if payload[i..i+6].eq_ignore_ascii_case(b"Host: ") {
-                let start = i + 6;
-                let mut end = start;
-                while end < payload.len() && payload[end] != b'\r' && payload[end] != b'\n' {
-                    end += 1;
-                }
-                return String::from_utf8(payload[start..end].to_vec()).ok();
-            }
-        }
+fn extract_http_host(payload: &[u8]) -> Option<String> {
+    let start = payload
+        .windows(6)
+        .position(|w| w.eq_ignore_ascii_case(b"Host: "))?
+        + 6;
+    let end = payload[start..]
+        .iter()
+        .position(|&c| c == b'\r' || c == b'\n')
+        .map_or(payload.len(), |pos| start + pos);
+    String::from_utf8(payload[start..end].to_vec()).ok()
+}
+
+fn extract_tls_sni(payload: &[u8]) -> Option<String> {
+    if payload.len() <= 43 || payload[0] != 0x16 || payload[1] != 0x03 || payload[5] != 0x01 {
+        return None;
     }
 
-    if payload.len() > 43 && payload[0] == 0x16 && payload[1] == 0x03 && payload[5] == 0x01 {
-        let mut offset = 43;
-        if offset < payload.len() {
-            let session_id_len = payload[offset] as usize;
-            offset += 1 + session_id_len;
-        }
-        if offset + 1 < payload.len() {
-            let cipher_suites_len = ((payload[offset] as usize) << 8) | (payload[offset+1] as usize);
-            offset += 2 + cipher_suites_len;
-        }
-        if offset < payload.len() {
-            let comp_len = payload[offset] as usize;
-            offset += 1 + comp_len;
-        }
-        if offset + 1 < payload.len() {
-            let ext_len = ((payload[offset] as usize) << 8) | (payload[offset+1] as usize);
-            offset += 2;
-            let ext_end = offset + ext_len;
-            while offset + 3 < ext_end && offset + 3 < payload.len() {
-                let ext_type = ((payload[offset] as u16) << 8) | (payload[offset+1] as u16);
-                let ext_data_len = ((payload[offset+2] as usize) << 8) | (payload[offset+3] as usize);
-                offset += 4;
-                if ext_type == 0x0000 {
-                    let mut sni_offset = offset;
-                    if sni_offset + 1 < payload.len() {
-                        sni_offset += 2;
-                        if sni_offset < payload.len() && payload[sni_offset] == 0 {
-                            sni_offset += 1;
-                            if sni_offset + 1 < payload.len() {
-                                let name_len = ((payload[sni_offset] as usize) << 8) | (payload[sni_offset+1] as usize);
-                                sni_offset += 2;
-                                if sni_offset + name_len <= payload.len() {
-                                    return String::from_utf8(payload[sni_offset..sni_offset+name_len].to_vec()).ok();
-                                }
-                            }
-                        }
-                    }
-                }
-                offset += ext_data_len;
+    let mut offset = 43;
+
+    let session_id_len = *payload.get(offset)? as usize;
+    offset += 1 + session_id_len;
+
+    let cipher_len = ((*payload.get(offset)? as usize) << 8) | (*payload.get(offset + 1)? as usize);
+    offset += 2 + cipher_len;
+
+    let comp_len = *payload.get(offset)? as usize;
+    offset += 1 + comp_len;
+
+    let ext_len = ((*payload.get(offset)? as usize) << 8) | (*payload.get(offset + 1)? as usize);
+    offset += 2;
+
+    let ext_end = offset + ext_len;
+
+    while offset + 3 < ext_end {
+        let ext_type = ((*payload.get(offset)? as u16) << 8) | (*payload.get(offset + 1)? as u16);
+        let ext_data_len =
+            ((*payload.get(offset + 2)? as usize) << 8) | (*payload.get(offset + 3)? as usize);
+        offset += 4;
+
+        if ext_type == 0x0000 {
+            let mut sni_offset = offset;
+            sni_offset += 2; // skip list len
+
+            let name_type = *payload.get(sni_offset)?;
+            if name_type == 0 {
+                // 0 = host_name
+                sni_offset += 1;
+                let name_len = ((*payload.get(sni_offset)? as usize) << 8)
+                    | (*payload.get(sni_offset + 1)? as usize);
+                sni_offset += 2;
+
+                let name_bytes = payload.get(sni_offset..sni_offset + name_len)?;
+                return String::from_utf8(name_bytes.to_vec()).ok();
             }
         }
+        offset += ext_data_len;
     }
+
     None
+}
+
+fn extract_host(payload: &[u8]) -> Option<String> {
+    extract_http_host(payload).or_else(|| extract_tls_sni(payload))
 }
 
 /// Build- and runtime-facing configuration for a future WinDivert capture backend.
@@ -212,25 +217,22 @@ impl WinDivertRuntime {
             }
         };
 
-        match plan.layer {
-            WinDivertLayer::Network => {
-                let wd = WinDivert::network(&plan.filter, plan.priority, plan.flags)
-                    .context("Failed to open WinDivert handle (Network Layer)")?;
-
+        macro_rules! run_windivert_loop {
+            ($wd:ident) => {
                 for (param, value) in plan.param_updates() {
-                    if let Err(e) = wd.set_param(param, value) {
+                    if let Err(e) = $wd.set_param(param, value) {
                         tracing::warn!("Warning: failed to set WinDivert param {:?}: {:?}", param, e);
                     }
                 }
 
                 tokio::task::spawn_blocking(move || {
                     let mut rx_buf = vec![0u8; 65535];
-                    
+
                     // (Client_IP, Client_Port) -> (Real_Dest_IP, Real_Dest_Port)
                     let mut nat_table: std::collections::HashMap<(std::net::Ipv4Addr, u16), (std::net::Ipv4Addr, u16)> = std::collections::HashMap::new();
 
                                         loop {
-                        match wd.recv(Some(&mut rx_buf)) {
+                        match $wd.recv(Some(&mut rx_buf)) {
                             Ok(mut packet) => {
                                 let data = packet.data.to_mut();
                                 let mut modified = false;
@@ -256,7 +258,7 @@ impl WinDivertRuntime {
                                         } else if dst_port != proxy_port && dst_port != proxy_port + 1 {
                                             nat_table.insert((src_ip, src_port), (dst_ip, dst_port));
 
-                                            // Change DstIP to loopback. 
+                                            // Change DstIP to loopback.
                                             data[16..20].copy_from_slice(&src_ip.octets());
                                             data[ip_header_len + 2..ip_header_len + 4].copy_from_slice(&target_proxy_port.to_be_bytes());
 
@@ -288,7 +290,7 @@ impl WinDivertRuntime {
                                     );
                                 }
 
-                                if let Err(e) = wd.send(&packet) {
+                                if let Err(e) = $wd.send(&packet) {
                                     tracing::error!("WinDivert send failed: {:?}", e);
                                 }
                             }
@@ -299,92 +301,19 @@ impl WinDivertRuntime {
                         }
                     }
                 });
+            };
+        }
+
+        match plan.layer {
+            WinDivertLayer::Network => {
+                let wd = WinDivert::network(&plan.filter, plan.priority, plan.flags)
+                    .context("Failed to open WinDivert handle (Network Layer)")?;
+                run_windivert_loop!(wd);
             }
             WinDivertLayer::NetworkForward => {
                 let wd = WinDivert::forward(&plan.filter, plan.priority, plan.flags)
                     .context("Failed to open WinDivert handle (Forward Layer)")?;
-
-                for (param, value) in plan.param_updates() {
-                    if let Err(e) = wd.set_param(param, value) {
-                        tracing::warn!("Warning: failed to set WinDivert param {:?}: {:?}", param, e);
-                    }
-                }
-
-                tokio::task::spawn_blocking(move || {
-                    let mut rx_buf = vec![0u8; 65535];
-                    
-                    let mut nat_table: std::collections::HashMap<(std::net::Ipv4Addr, u16), (std::net::Ipv4Addr, u16)> = std::collections::HashMap::new();
-
-                                        loop {
-                        match wd.recv(Some(&mut rx_buf)) {
-                            Ok(mut packet) => {
-                                let data = packet.data.to_mut();
-                                let mut modified = false;
-
-                                if let Ok(ipv4_slice) = etherparse::Ipv4HeaderSlice::from_slice(data) {
-                                    let ip_header_len = ipv4_slice.slice().len();
-                                    if ipv4_slice.protocol() == etherparse::IpNumber::TCP && data.len() >= ip_header_len + 20 {
-                                        let src_ip = std::net::Ipv4Addr::new(data[12], data[13], data[14], data[15]);
-                                        let dst_ip = std::net::Ipv4Addr::new(data[16], data[17], data[18], data[19]);
-                                        let src_port = u16::from_be_bytes([data[ip_header_len], data[ip_header_len + 1]]);
-                                        let dst_port = u16::from_be_bytes([data[ip_header_len + 2], data[ip_header_len + 3]]);
-
-                                        let mut target_proxy_port = proxy_port;
-                                        if dst_port == 443 { target_proxy_port = proxy_port + 1; }
-
-                                        if src_port == proxy_port || src_port == proxy_port + 1 {
-                                            if let Some(&(orig_dst_ip, orig_dst_port)) = nat_table.get(&(dst_ip, dst_port)) {
-                                                data[12..16].copy_from_slice(&orig_dst_ip.octets());
-                                                data[ip_header_len..ip_header_len + 2].copy_from_slice(&orig_dst_port.to_be_bytes());
-                                                packet.address.set_outbound(false); // Inject INBOUND so the client socket receives it!
-                                                modified = true;
-                                            }
-                                        } else if dst_port != proxy_port && dst_port != proxy_port + 1 {
-                                            nat_table.insert((src_ip, src_port), (dst_ip, dst_port));
-
-                                            // Change DstIP to loopback. 
-                                            data[16..20].copy_from_slice(&src_ip.octets());
-                                            data[ip_header_len + 2..ip_header_len + 4].copy_from_slice(&target_proxy_port.to_be_bytes());
-
-                                            let mut host_info = String::new();
-                                            let mut syn = false;
-                                            if let Ok(tcp_slice) = etherparse::TcpHeaderSlice::from_slice(&data[ip_header_len..]) {
-                                                syn = tcp_slice.syn();
-                                                let tcp_header_len = tcp_slice.slice().len();
-                                                if ip_header_len + tcp_header_len < data.len() {
-                                                    let payload = &data[ip_header_len + tcp_header_len..];
-                                                    if let Some(host) = extract_host(payload) {
-                                                        host_info = format!("(Host: {}) ", host);
-                                                    }
-                                                }
-                                            }
-
-                                            packet.address.set_outbound(false); // INBOUND to local stack
-                                            modified = true;
-                                            if syn || !host_info.is_empty() {
-                                                tracing::info!("Intercepted {}->{}:{} {}! Redirecting to {}:{}", src_port, dst_ip, dst_port, host_info, src_ip, target_proxy_port);
-                                            }
-                                        }
-                                    }
-                                }
-
-                                if modified {
-                                    let _ = packet.recalculate_checksums(
-                                        windivert_sys::ChecksumFlags::new()
-                                    );
-                                }
-
-                                if let Err(e) = wd.send(&packet) {
-                                    tracing::error!("WinDivert send failed: {:?}", e);
-                                }
-                            }
-                            Err(e) => {
-                                tracing::error!("WinDivert recv failed: {:?}", e);
-                                break;
-                            }
-                        }
-                    }
-                });
+                run_windivert_loop!(wd);
             }
         }
 
@@ -559,23 +488,3 @@ mod tests {
         assert!(!config.filter.is_empty());
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

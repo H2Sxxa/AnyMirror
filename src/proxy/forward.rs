@@ -107,4 +107,3 @@ fn is_forwardable_header(name: &HeaderName) -> bool {
         && *name != TRANSFER_ENCODING
         && *name != UPGRADE
 }
-
