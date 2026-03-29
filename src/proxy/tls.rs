@@ -1,25 +1,130 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use axum::{Router, extract::Request};
 use hyper::body::Incoming;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto::Builder;
-use rcgen::generate_simple_self_signed;
+use rcgen::{
+    BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair, KeyUsagePurpose,
+};
+use std::collections::HashMap;
 use std::{fs, path::Path, sync::Arc};
+use std::sync::Mutex;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
-use tokio_rustls::rustls::ServerConfig;
+use tokio_rustls::rustls::server::ResolvesServerCert;
+use tokio_rustls::rustls::{ServerConfig, sign::CertifiedKey};
 use tower::Service;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TlsIntercepted;
 
-pub async fn serve_app_tls(
-    app: Router,
-    listen_addr: std::net::SocketAddr,
-    domains: Vec<String>,
-) -> Result<()> {
-    let tls_config = get_or_generate_cert_config(&domains).await?;
-    let acceptor = TlsAcceptor::from(Arc::new(tls_config));
+/// Dynamic certificate resolver that generates certificates on-the-fly for SNI hostnames
+#[derive(Clone, Debug)]
+struct DynamicCertResolver {
+    ca_cert_pem: String,
+    ca_key_pem: String,
+    /// Cache of generated certificates
+    cache: Arc<Mutex<HashMap<String, Arc<CertifiedKey>>>>,
+}
+
+impl DynamicCertResolver {
+    fn new(ca_cert_pem: String, ca_key_pem: String) -> Self {
+        Self {
+            ca_cert_pem,
+            ca_key_pem,
+            cache: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    fn get_or_generate_cert(&self, hostname: &str) -> Result<Arc<CertifiedKey>> {
+        // Check cache first
+        {
+            let cache = self
+                .cache
+                .lock()
+                .map_err(|_| anyhow!("certificate cache lock poisoned"))?;
+            if let Some(cert) = cache.get(hostname) {
+                return Ok(cert.clone());
+            }
+        }
+
+        let ca_key = KeyPair::from_pem(&self.ca_key_pem)
+            .context("failed to parse CA private key PEM")?;
+        let ca_issuer = Issuer::new(build_ca_params()?, ca_key);
+
+        let mut leaf_params = CertificateParams::new(vec![hostname.to_string()])
+            .context("failed to build leaf cert params")?;
+        leaf_params
+            .distinguished_name
+            .push(DnType::CommonName, hostname);
+        let leaf_key = KeyPair::generate().context("failed to generate leaf key")?;
+        let leaf_cert = leaf_params
+            .signed_by(&leaf_key, &ca_issuer)
+            .context("failed to issue leaf cert with CA")?;
+        let leaf_cert_pem = leaf_cert.pem();
+        let key_pem = leaf_key.serialize_pem();
+
+        let full_chain_pem = format!("{}\n{}", leaf_cert_pem, self.ca_cert_pem);
+        let mut cert_reader = std::io::Cursor::new(full_chain_pem.as_bytes());
+        let certs: Vec<_> = rustls_pemfile::certs(&mut cert_reader)
+            .collect::<Result<Vec<_>, _>>()
+            .context("failed to parse generated cert")?;
+
+        let mut key_reader = std::io::Cursor::new(key_pem.as_bytes());
+        let private_key = rustls_pemfile::private_key(&mut key_reader)
+            .context("failed to read private key")?
+            .context("no private key found")?;
+
+        // Use any_supported_type to handle all key types generically
+        let signing_key = rustls::crypto::ring::sign::any_supported_type(&private_key)
+            .context("unsupported or invalid private key")?;
+
+        let certified_key = Arc::new(CertifiedKey::new(certs, signing_key));
+
+        // Cache it
+        {
+            let mut cache = self
+                .cache
+                .lock()
+                .map_err(|_| anyhow!("certificate cache lock poisoned"))?;
+            cache.insert(hostname.to_string(), certified_key.clone());
+        }
+
+        Ok(certified_key)
+    }
+}
+
+impl ResolvesServerCert for DynamicCertResolver {
+    fn resolve(
+        &self,
+        client_hello: tokio_rustls::rustls::server::ClientHello,
+    ) -> Option<Arc<CertifiedKey>> {
+        // Extract SNI hostname from client hello
+        let hostname = client_hello.server_name().map(|sni| sni.to_string())?;
+
+        match self.get_or_generate_cert(&hostname) {
+            Ok(key) => Some(key),
+            Err(e) => {
+                tracing::warn!("Failed to generate certificate for {}: {}", hostname, e);
+                None
+            }
+        }
+    }
+}
+
+pub async fn serve_app_tls(app: Router, listen_addr: std::net::SocketAddr) -> Result<()> {
+    // Generate or load CA certificate
+    let (ca_cert_pem, ca_key_pem) = get_or_generate_ca_cert()?;
+
+    // Create dynamic certificate resolver
+    let cert_resolver = DynamicCertResolver::new(ca_cert_pem, ca_key_pem);
+
+    // Create server config with dynamic resolver
+    let config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_cert_resolver(Arc::new(cert_resolver));
+
+    let acceptor = TlsAcceptor::from(Arc::new(config));
 
     // We inject TlsIntercepted into the request extensions directly in the router clone here
     let app = app.layer(axum::middleware::map_request(
@@ -30,7 +135,10 @@ pub async fn serve_app_tls(
     ));
 
     let listener = TcpListener::bind(listen_addr).await?;
-    tracing::info!("TLS interception server listening on {}", listen_addr);
+    tracing::info!(
+        "TLS interception server listening on {} (dynamic certificate mode)",
+        listen_addr
+    );
 
     // Hyper 1.x / axum 0.8 style pure TCP loop
     loop {
@@ -71,42 +179,52 @@ pub async fn serve_app_tls(
     }
 }
 
-async fn get_or_generate_cert_config(domains: &[String]) -> Result<ServerConfig> {
-    let cert_path = Path::new("anymirror.crt");
-    let key_path = Path::new("anymirror.key");
+fn get_or_generate_ca_cert() -> Result<(String, String)> {
+    let cert_path = Path::new("anymirror_ca.crt");
+    let key_path = Path::new("anymirror_ca.key");
 
-    if !cert_path.exists() || !key_path.exists() {
-        tracing::info!("Generating new self-signed certificate for TLS interception...");
+    if cert_path.exists() && key_path.exists() {
+        // Load existing CA
+        let cert_pem = fs::read_to_string(cert_path).context("failed to read CA cert")?;
+        let key_pem = fs::read_to_string(key_path).context("failed to read CA key")?;
 
-        let cert = generate_simple_self_signed(domains.to_vec())?;
-        let pem_cert = cert.cert.pem();
-        let pem_key = cert.signing_key.serialize_pem();
-
-        fs::write(cert_path, pem_cert)?;
-        fs::write(key_path, pem_key)?;
-
-        tracing::info!(
-            "Saved self-signed certificate to anymirror.crt and anymirror.key. You must trust anymirror.crt in your system/JVM for TLS interception to work."
-        );
+        tracing::info!("Loaded existing CA certificate from anymirror_ca.crt");
+        return Ok((cert_pem, key_pem));
     }
 
-    // Load certs using standard rustls-pemfile
-    let cert_file = fs::File::open(cert_path).context("cannot open cert file")?;
-    let mut cert_reader = std::io::BufReader::new(cert_file);
-    let certs: Vec<_> = rustls_pemfile::certs(&mut cert_reader)
-        .collect::<Result<Vec<_>, _>>()
-        .context("failed to parse pem cert")?;
+    // Generate new CA certificate
+    tracing::info!("Generating new CA certificate for dynamic TLS interception...");
 
-    let key_file = fs::File::open(key_path).context("cannot open key file")?;
-    let mut key_reader = std::io::BufReader::new(key_file);
-    let private_key = rustls_pemfile::private_key(&mut key_reader)
-        .context("failed to read private key")?
-        .context("no private key found")?;
+    let ca_params = build_ca_params()?;
+    let ca_key = KeyPair::generate().context("failed to generate CA key")?;
+    let ca_cert = ca_params
+        .self_signed(&ca_key)
+        .context("failed to self-sign CA cert")?;
 
-    let config = ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(certs, private_key)
-        .context("failed to build rustls ServerConfig")?;
+    let cert_pem = ca_cert.pem();
+    let key_pem = ca_key.serialize_pem();
 
-    Ok(config)
+    fs::write(cert_path, &cert_pem).context("failed to write CA cert file")?;
+    fs::write(key_path, &key_pem).context("failed to write CA key file")?;
+
+    tracing::info!(
+        "Saved CA certificate to anymirror_ca.crt and anymirror_ca.key. Trust anymirror_ca.crt to avoid certificate warnings."
+    );
+
+    Ok((cert_pem, key_pem))
+}
+
+fn build_ca_params() -> Result<CertificateParams> {
+    let mut params = CertificateParams::new(vec!["anymirror-ca".to_string()])
+        .context("failed to build CA params")?;
+    params
+        .distinguished_name
+        .push(DnType::CommonName, "AnyMirror CA");
+    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    params.key_usages = vec![
+        KeyUsagePurpose::KeyCertSign,
+        KeyUsagePurpose::CrlSign,
+        KeyUsagePurpose::DigitalSignature,
+    ];
+    Ok(params)
 }

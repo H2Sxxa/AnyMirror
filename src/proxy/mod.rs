@@ -90,11 +90,9 @@ pub async fn serve_transparent(
     let tls_port = config.tls_port.unwrap_or_else(|| listen_addr.port() + 1);
     https_listen_addr.set_port(tls_port);
 
-    let domains: Vec<String> = config.rules.target_hosts().into_iter().collect();
-
     let app_for_tls = app.clone();
     tokio::spawn(async move {
-        let _ = tls::serve_app_tls(app_for_tls, https_listen_addr, domains).await;
+        let _ = tls::serve_app_tls(app_for_tls, https_listen_addr).await;
     });
 
     serve_app(app, listen_addr).await
