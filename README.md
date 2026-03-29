@@ -47,6 +47,7 @@ Create a `config.yml` file with your redirection rules:
 
 ```yaml
 listen: 127.0.0.1:8787
+# tls_port: 8788  # Optional: customize HTTPS proxy port (default: listen_port + 1)
 
 includes:
   # Prefix matching (default for URLs ending with /)
@@ -63,6 +64,12 @@ includes:
     from: https://maven.minecraftforge.net
     to: https://bmclapi2.bangbang93.com/maven
 ```
+
+### Configuration Fields
+
+- **listen:** Server address and port to bind to (e.g., `127.0.0.1:8787`)
+- **tls_port** (optional): Custom HTTPS proxy port. If not specified, defaults to `listen_port + 1`. For example, if `listen` is `127.0.0.1:8787`, the HTTPS port will be `8788` unless overridden here.
+- **includes:** List of URL redirection rules (see Rule Matching Modes below)
 
 ### Rule Matching Modes
 

@@ -47,6 +47,7 @@ cargo run -- --mode transparent --layer network-forward --config config.yml
 
 ```yaml
 listen: 127.0.0.1:8787
+# tls_port: 8788  # 可选：自定义 HTTPS 代理端口（如不指定，默认为 listen_port + 1）
 
 includes:
   # 前缀匹配（以 / 结尾的 URL 默认方式）
@@ -63,6 +64,12 @@ includes:
     from: https://maven.minecraftforge.net
     to: https://bmclapi2.bangbang93.com/maven
 ```
+
+### 配置字段说明
+
+- **listen：** 代理服务绑定的地址和端口（例如 `127.0.0.1:8787`）
+- **tls_port** （可选）：自定义 HTTPS 代理端口。如不指定，默认为 `listen_port + 1`。例如 `listen` 为 `127.0.0.1:8787` 时，HTTPS 端口默认为 `8788`，除非在此指定其他端口。
+- **includes：** URL 重定向规则列表（见下方规则匹配模式）
 
 ### 规则匹配模式
 
