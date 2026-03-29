@@ -57,6 +57,9 @@ async fn main() -> Result<()> {
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let cli = Cli::parse();
+    let config = config::load_config(&cli.config)?;
 
     let banner = cfonts::render(cfonts::Options {
         text: String::from("anymirror"),
@@ -66,11 +69,6 @@ async fn main() -> Result<()> {
         ..cfonts::Options::default()
     });
     println!("{}", banner.text);
-
-    let _ = rustls::crypto::ring::default_provider().install_default();
-
-    let cli = Cli::parse();
-    let config = config::load_config(&cli.config)?;
 
     tracing::info!(
         "anymirror listening on {} with {} include rules in {:?} mode",
