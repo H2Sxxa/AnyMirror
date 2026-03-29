@@ -25,6 +25,35 @@ This approach works transparently to applications - no client configuration, pro
 - Administrator privileges (required to load WinDivert driver and capture network traffic)
 - Rust toolchain 1.70+
 
+## Installation & Setup
+
+### 1. Install WinDivert Driver
+
+The transparent proxy mode requires the WinDivert driver. Download and install it:
+
+1. Download WinDivert from the [official releases page](https://reqrypt.org/windivert.html)
+2. Extract the archive. You need the following files in your project directory:
+   - `WinDivert64.sys` (or `WinDivert32.sys` for 32-bit systems) - the kernel driver
+   - `WinDivert.dll` - the runtime library
+   - `WinDivert.lib` - the import library (needed for compilation)
+3. The driver will be loaded automatically when you run anymirror in transparent mode with administrator privileges
+
+**Note:** Place all three files in the project root directory where the executable will run.
+
+### 2. Trust the TLS Certificate
+
+When running in transparent mode, anymirror intercepts HTTPS traffic and re-encrypts it with a self-signed certificate. To avoid security warnings:
+
+1. Run anymirror for the first time - it will generate `anymirror.crt` and `anymirror.key` in the working directory
+2. Install the certificate in your system/application:
+   - **Windows system trust:** Use `certmgr.msc` or PowerShell to import `anymirror.crt` into the Trusted Root Certification Authorities store
+   - **Java/Maven:** Import to the JVM keystore with: `keytool -import -alias anymirror -file anymirror.crt -keystore %JAVA_HOME%\lib\security\cacerts`
+   - **Browser:** Import the certificate into your browser's trusted CA list
+
+3. After trusting the certificate, HTTPS interception will work without warnings
+
+**Note:** The proxy will work even without trusting the certificate, but applications will display security warnings/errors.
+
 ## Usage
 
 ```bash

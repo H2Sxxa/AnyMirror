@@ -25,6 +25,35 @@ AnyMirror 在第 3 层（网络层）工作，流程如下：
 - 管理员权限（需要加载 WinDivert 驱动程序并捕获网络流量）
 - Rust 工具链 1.70 或以上
 
+## 安装与配置
+
+### 1. 安装 WinDivert 驱动
+
+透明代理模式需要 WinDivert 驱动。下载并安装步骤如下：
+
+1. 从 [官方发布页面](https://reqrypt.org/windivert.html) 下载 WinDivert
+2. 解压文件，需要以下文件放在项目目录中：
+   - `WinDivert64.sys`（32 位系统使用 `WinDivert32.sys`）- 内核驱动
+   - `WinDivert.dll` - 运行时库
+   - `WinDivert.lib` - 导入库（编译时需要）
+3. 以管理员权限运行透明代理时，驱动会自动加载
+
+**注意：** 将所有三个文件放在项目根目录，与可执行文件相同的目录。
+
+### 2. 信任 TLS 证书
+
+在透明代理模式下，anymirror 拦截 HTTPS 流量并用自签名证书重新加密。为避免安全警告：
+
+1. 第一次运行 anymirror 时，它会在工作目录生成 `anymirror.crt` 和 `anymirror.key`
+2. 将证书安装到系统或应用中：
+   - **Windows 系统信任：** 使用 `certmgr.msc` 或 PowerShell 将 `anymirror.crt` 导入到"受信任的根证书颁发机构"
+   - **Java/Maven：** 用以下命令导入 JVM 密钥库：`keytool -import -alias anymirror -file anymirror.crt -keystore %JAVA_HOME%\lib\security\cacerts`
+   - **浏览器：** 将证书导入浏览器的受信任 CA 列表
+
+3. 信任证书后，HTTPS 拦截将不显示安全警告
+
+**注意：** 即使不信任证书，代理仍能工作，但应用会显示安全警告或错误。
+
 ## 使用方法
 
 ```bash
