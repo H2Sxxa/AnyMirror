@@ -15,7 +15,7 @@ pub(super) fn build_proxy_response(
 
     for (name, value) in upstream.headers() {
         if is_forwardable_header(name) {
-            response_headers.insert(name, value.clone());
+            response_headers.append(name, value.clone());
         }
     }
 
