@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use traffic::windivert::WinDivertLayer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ServerMode {
@@ -26,8 +27,8 @@ pub enum CaptureLayer {
 impl From<CaptureLayer> for traffic::windivert::WinDivertLayer {
     fn from(layer: CaptureLayer) -> Self {
         match layer {
-            CaptureLayer::Network => traffic::windivert::WinDivertLayer::Network,
-            CaptureLayer::NetworkForward => traffic::windivert::WinDivertLayer::NetworkForward,
+            CaptureLayer::Network => WinDivertLayer::Network,
+            CaptureLayer::NetworkForward => WinDivertLayer::NetworkForward,
         }
     }
 }

@@ -80,18 +80,32 @@ listen: 127.0.0.1:8787
 
 includes:
   # 前缀匹配（以 / 结尾的 URL 默认方式）
-  - from: https://libraries.minecraft.net/
-    to: https://bmclapi2.bangbang93.com/maven
-    
+  - origin: https://libraries.minecraft.net/
+    upstream:
+      url: https://bmclapi2.bangbang93.com/maven
+
   # 前缀匹配（显式指定）
   - kind: prefix
-    from: https://resources.download.minecraft.net/
-    to: https://bmclapi2.bangbang93.com/assets/
-    
+    origin: https://resources.download.minecraft.net/
+    upstream:
+      url: https://bmclapi2.bangbang93.com/assets/
+
   # 精确匹配（不以 / 结尾的 URL 默认方式）
   - kind: exact
-    from: https://maven.minecraftforge.net
-    to: https://bmclapi2.bangbang93.com/maven
+    origin: https://maven.minecraftforge.net
+    upstream:
+      url: https://bmclapi2.bangbang93.com/maven
+  # 高级 Upstream 重写配置 (SNI, Custom DNS, IP mapping)
+  - kind: exact
+    origin: https://example.com/api
+    upstream:
+      url: https://api.backend.local
+      connect_ip: 10.0.0.5     # 强制将流量发送到指定的 IP
+      connect_host: api.internal.local # 覆盖 DNS 解析的目标域名
+      sni: backend.local       # 覆盖 TLS 握手时的 SNI 域名
+      dns:
+        mode: doh              # DNS 解析模式: system, udp, 或 doh
+        server: https://dns.google/dns-query # DoH 服务器（如果 mode 是 udp，则填标准 DNS IP）
 ```
 
 ### 配置字段说明
@@ -102,7 +116,7 @@ includes:
 
 ### 规则匹配模式
 
-- **prefix：** 匹配任何路径以 "from" 路径开头的请求。适用于重定向整个目录树。查询字符串会被保留。
+- **prefix：** 匹配任何路径以 "origin" 路径开头的请求。适用于重定向整个目录树。查询字符串会被保留。
 - **exact：** 仅匹配完全相同的 URL（方案、域名、端口、路径和查询必须全部匹配）。对于不以 `/` 结尾的 URL，这是默认模式。
 
 如果省略 `kind` 字段，系统会自动判断：以 `/` 结尾的 URL 默认使用 `prefix` 模式，其他 URL 默认使用 `exact` 模式。代理透明地处理 HTTP 和 HTTPS 流量，提取原始主机名并改写请求。
@@ -128,6 +142,12 @@ includes:
 
 ## 技术细节
 
+- **支持 IPv4 与 IPv6 双栈：**
+  透明代理模式自动捕获主机的 IPv4 和 IPv6 TCP 流量，完美适应现代混合网络环境。
+
+- **完整的 HTTP 能力支持：**
+  通过 Hyper 引擎实现对所有 HTTP 方法（GET、POST、PUT、DELETE 等）的支持，以及双向高性能流式的请求体和响应体转发。
+
 - **WinDivert 模式：**
   - `Network`：捕获源自或目标为本地主机的流量
   - `NetworkForward`：捕获通过主机转发的流量（为 WSL、虚拟机、USB 网络共享等启用网关功能）
@@ -140,10 +160,12 @@ includes:
 
 ## 开发计划
 
-- [x] 基于 WinDivert 的 L3 数据包拦截（Network 和 NetworkForward 层）
+- [x] 基于 WinDivert 的 L3 数据包拦截（IPv4 及 IPv6，包含 Network 和 NetworkForward 层）
 - [x] HTTPS 请求的 SNI 提取
 - [x] HTTP 请求的 Host 头提取
-- [x] 基于 Tokio 和 Rustls 的异步 Socket 处理
+- [x] 高性能的 Hyper 引擎重构（支持全 HTTP 方法与上下行 Request Body 透传）
+- [x] 基于 Tokio 和原生 Rustls 的完全异步 Socket 网络栈
+- [x] 可扩展的高级 Upstream 配置 (`connect_ip`、`connect_host`、`sni` 以及 `DoH` 自定义 DNS)
 - [x] 基于 clap 的命令行界面
 - [ ] 配置文件监视和热重载（配置文件变化时自动重新加载）
 - [ ] TUN/TAP 设备支持，用于跨平台部署（macOS、Linux），集成用户态 TCP/IP 协议栈

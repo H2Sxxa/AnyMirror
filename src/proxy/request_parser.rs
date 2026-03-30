@@ -1,32 +1,11 @@
-use axum::{
-    Json,
-    http::{HeaderMap, Method, StatusCode, Uri, header::HOST},
-    response::{IntoResponse, Response},
-};
-use serde::{Deserialize, Serialize};
+use axum::http::{header::HOST, HeaderMap, Method, StatusCode, Uri};
+use axum::response::Response;
 use url::Url;
 
-use crate::rules::{Rewrite, RuleKind};
+use super::responses::json_error;
 
 pub(crate) const ORIGINAL_URL_HEADER: &str = "x-anymirror-original-url";
 pub(crate) const ORIGINAL_SCHEME_HEADER: &str = "x-anymirror-original-scheme";
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct RewriteQuery {
-    pub(crate) url: String,
-}
-
-#[derive(Debug, Serialize)]
-pub(crate) struct RewriteResponse {
-    pub(crate) original: String,
-    pub(crate) rewritten: String,
-    pub(crate) kind: &'static str,
-}
-
-#[derive(Debug, Serialize)]
-struct ErrorResponse {
-    error: String,
-}
 
 pub(crate) fn parse_request_url(raw: &str) -> Result<Url, Response> {
     Url::parse(raw)
@@ -72,35 +51,13 @@ pub(crate) fn resolve_transparent_target(headers: &HeaderMap, uri: &Uri) -> Resu
 }
 
 pub(crate) fn ensure_supported_method(method: &Method) -> Result<(), Response> {
-    if matches!(*method, Method::GET | Method::HEAD) {
-        Ok(())
-    } else {
-        Err(json_error(
+    if method == Method::CONNECT {
+        return Err(json_error(
             StatusCode::METHOD_NOT_ALLOWED,
-            "only GET and HEAD are supported",
-        ))
+            "CONNECT method is not supported for plain HTTP forwarding yet",
+        ));
     }
-}
-
-pub(crate) fn json_error(status: StatusCode, message: impl Into<String>) -> Response {
-    (
-        status,
-        Json(ErrorResponse {
-            error: message.into(),
-        }),
-    )
-        .into_response()
-}
-
-pub(crate) fn rule_kind_name(rewrite: Rewrite<'_>) -> &'static str {
-    match rewrite.rule.kind {
-        RuleKind::Exact => "exact",
-        RuleKind::Prefix => "prefix",
-    }
-}
-
-pub(crate) async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+    Ok(())
 }
 
 fn read_required_host(headers: &HeaderMap) -> Result<String, Response> {
@@ -148,9 +105,9 @@ fn read_optional_header_map_value(
 
 #[cfg(test)]
 mod tests {
-    use axum::http::{HeaderMap, HeaderValue, Uri, header::HOST};
+    use axum::http::{header::HOST, HeaderMap, HeaderValue, Uri};
 
-    use super::{ORIGINAL_SCHEME_HEADER, ORIGINAL_URL_HEADER, resolve_transparent_target};
+    use super::{resolve_transparent_target, ORIGINAL_SCHEME_HEADER, ORIGINAL_URL_HEADER};
 
     #[test]
     fn resolves_transparent_target_from_original_url_header() {

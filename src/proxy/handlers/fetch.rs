@@ -5,14 +5,16 @@ use axum::{
     response::Response,
 };
 
-use super::{
-    forward::forward_request,
-    shared::{RewriteQuery, ensure_supported_method, parse_request_url},
+use super::super::{
+    executor::UpstreamExecutor,
+    forwarding::forward_request,
+    request_parser::{ensure_supported_method, parse_request_url},
+    responses::RewriteQuery,
     state::AppState,
 };
 
-pub(crate) async fn fetch_url(
-    State(state): State<AppState>,
+pub(crate) async fn fetch_url<E: UpstreamExecutor>(
+    State(state): State<AppState<E>>,
     Query(query): Query<RewriteQuery>,
     request: Request<Body>,
 ) -> Response {
@@ -25,12 +27,15 @@ pub(crate) async fn fetch_url(
         Err(response) => return response,
     };
 
+    let (parts, body) = request.into_parts();
+
     forward_request(
         &state,
-        request.method().clone(),
-        request.headers(),
+        parts.method,
+        &parts.headers,
+        body,
         original,
-        Some("query"),
+        Some("fetch"),
     )
     .await
 }

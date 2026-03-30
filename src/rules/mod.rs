@@ -1,6 +1,12 @@
-use anyhow::{Context, Result, bail};
+mod matcher;
+
+use std::{collections::HashSet, net::IpAddr};
+
+use anyhow::{bail, ensure, Context, Result};
 use serde::Deserialize;
 use url::Url;
+
+use self::matcher::{infer_rule_kind, join_paths, path_has_prefix, same_origin, same_url};
 
 #[derive(Debug, Clone)]
 pub struct Rules {
@@ -8,16 +14,32 @@ pub struct Rules {
 }
 
 #[derive(Debug, Clone)]
-pub struct Rewrite<'a> {
-    pub target: Url,
+pub struct RuleMatch<'a> {
+    pub upstream: UpstreamPlan,
     pub rule: &'a Rule,
 }
 
 #[derive(Debug, Clone)]
 pub struct Rule {
     pub kind: RuleKind,
-    pub from: Url,
-    pub to: Url,
+    pub origin: Url,
+    pub upstream: UpstreamPlan,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpstreamPlan {
+    pub url: Url,
+    pub sni: Option<String>,
+    pub host: Option<String>,
+    pub connect_host: Option<String>,
+    pub connect_ip: Option<IpAddr>,
+    pub dns: Option<DnsPlan>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DnsPlan {
+    pub mode: DnsMode,
+    pub server: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -27,18 +49,42 @@ pub enum RuleKind {
     Prefix,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DnsMode {
+    System,
+    Udp,
+    Doh,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct RawRule {
     pub kind: Option<RuleKind>,
-    pub from: String,
-    pub to: String,
+    pub origin: String,
+    pub upstream: RawUpstreamPlan,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RawUpstreamPlan {
+    pub url: String,
+    pub sni: Option<String>,
+    pub host: Option<String>,
+    pub connect_host: Option<String>,
+    pub connect_ip: Option<IpAddr>,
+    pub dns: Option<RawDnsPlan>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RawDnsPlan {
+    pub mode: DnsMode,
+    pub server: Option<String>,
 }
 
 impl Rules {
-    pub fn rewrite(&self, original: &Url) -> Option<Rewrite<'_>> {
+    pub fn resolve(&self, original: &Url) -> Option<RuleMatch<'_>> {
         self.entries.iter().find_map(|rule| {
-            rule.rewrite(original)
-                .map(|target| Rewrite { target, rule })
+            rule.resolve(original)
+                .map(|upstream| RuleMatch { upstream, rule })
         })
     }
 
@@ -50,10 +96,10 @@ impl Rules {
         self.entries.is_empty()
     }
 
-    pub fn target_hosts(&self) -> std::collections::HashSet<String> {
+    pub fn origin_hosts(&self) -> HashSet<String> {
         self.entries
             .iter()
-            .filter_map(|r| r.from.host_str().map(|s| s.to_string()))
+            .filter_map(|rule| rule.origin.host_str().map(|value| value.to_string()))
             .collect()
     }
 }
@@ -74,123 +120,136 @@ impl TryFrom<RawRule> for Rule {
     type Error = anyhow::Error;
 
     fn try_from(value: RawRule) -> Result<Self> {
-        let from = Url::parse(&value.from)
-            .with_context(|| format!("invalid from url `{}`", value.from))?;
-        let to = Url::parse(&value.to).with_context(|| format!("invalid to url `{}`", value.to))?;
-
+        let origin = Url::parse(&value.origin)
+            .with_context(|| format!("invalid origin url `{}`", value.origin))?;
         let kind = value
             .kind
-            .unwrap_or_else(|| infer_rule_kind(&from, &value.from));
+            .unwrap_or_else(|| infer_rule_kind(&origin, &value.origin));
+        let upstream = UpstreamPlan::try_from(value.upstream)?;
 
-        if matches!(kind, RuleKind::Prefix) && (from.query().is_some() || to.query().is_some()) {
+        if matches!(kind, RuleKind::Prefix)
+            && (origin.query().is_some() || upstream.url.query().is_some())
+        {
             bail!(
                 "prefix rules cannot contain query strings: `{}` -> `{}`",
-                value.from,
-                value.to
+                origin,
+                upstream.url
             );
         }
 
-        Ok(Self { kind, from, to })
+        Ok(Self {
+            kind,
+            origin,
+            upstream,
+        })
+    }
+}
+
+impl TryFrom<RawUpstreamPlan> for UpstreamPlan {
+    type Error = anyhow::Error;
+
+    fn try_from(value: RawUpstreamPlan) -> Result<Self> {
+        let url = Url::parse(&value.url)
+            .with_context(|| format!("invalid upstream url `{}`", value.url))?;
+        let plan = Self {
+            url,
+            sni: value.sni.filter(|value| !value.is_empty()),
+            host: value.host.filter(|value| !value.is_empty()),
+            connect_host: value.connect_host.filter(|value| !value.is_empty()),
+            connect_ip: value.connect_ip,
+            dns: value.dns.map(DnsPlan::try_from).transpose()?,
+        };
+
+        plan.validate()?;
+        Ok(plan)
+    }
+}
+
+impl TryFrom<RawDnsPlan> for DnsPlan {
+    type Error = anyhow::Error;
+
+    fn try_from(value: RawDnsPlan) -> Result<Self> {
+        let plan = Self {
+            mode: value.mode,
+            server: value.server.filter(|value| !value.is_empty()),
+        };
+
+        match plan.mode {
+            DnsMode::System => ensure!(
+                plan.server.is_none(),
+                "dns.server must be omitted when dns.mode=system"
+            ),
+            DnsMode::Udp | DnsMode::Doh => ensure!(
+                plan.server.is_some(),
+                "dns.server is required when dns.mode is udp or doh"
+            ),
+        }
+
+        Ok(plan)
+    }
+}
+
+impl UpstreamPlan {
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            !(self.connect_host.is_some() && self.connect_ip.is_some()),
+            "upstream.connect_host and upstream.connect_ip are mutually exclusive"
+        );
+        ensure!(
+            !(self.connect_ip.is_some() && self.dns.is_some()),
+            "upstream.dns cannot be used together with upstream.connect_ip"
+        );
+        Ok(())
     }
 }
 
 impl Rule {
-    pub fn rewrite(&self, original: &Url) -> Option<Url> {
+    pub fn resolve(&self, original: &Url) -> Option<UpstreamPlan> {
         match self.kind {
-            RuleKind::Exact => self.rewrite_exact(original),
-            RuleKind::Prefix => self.rewrite_prefix(original),
+            RuleKind::Exact => self.resolve_exact(original),
+            RuleKind::Prefix => self.resolve_prefix(original),
         }
     }
 
-    fn rewrite_exact(&self, original: &Url) -> Option<Url> {
-        if same_url(original, &self.from) {
-            Some(self.to.clone())
+    fn resolve_exact(&self, original: &Url) -> Option<UpstreamPlan> {
+        if same_url(original, &self.origin) {
+            Some(self.upstream.clone())
         } else {
             None
         }
     }
 
-    fn rewrite_prefix(&self, original: &Url) -> Option<Url> {
-        if !same_origin(original, &self.from) {
+    fn resolve_prefix(&self, original: &Url) -> Option<UpstreamPlan> {
+        if !same_origin(original, &self.origin) {
             return None;
         }
 
-        let from_path = self.from.path();
+        let origin_path = self.origin.path();
         let original_path = original.path();
 
-        if !path_has_prefix(original_path, from_path) {
+        if !path_has_prefix(original_path, origin_path) {
             return None;
         }
 
         let suffix = original_path
-            .strip_prefix(from_path)
+            .strip_prefix(origin_path)
             .or_else(|| original_path.strip_prefix('/'))
             .unwrap_or_default();
 
-        let mut target = self.to.clone();
-        target.set_path(&join_paths(self.to.path(), suffix));
-        target.set_query(original.query());
-        target.set_fragment(None);
+        let mut upstream = self.upstream.clone();
+        upstream
+            .url
+            .set_path(&join_paths(self.upstream.url.path(), suffix));
+        upstream.url.set_query(original.query());
+        upstream.url.set_fragment(None);
 
-        Some(target)
+        Some(upstream)
     }
-}
-
-fn infer_rule_kind(from: &Url, raw_from: &str) -> RuleKind {
-    if from.path() == "/" || raw_from.ends_with('/') {
-        RuleKind::Prefix
-    } else {
-        RuleKind::Exact
-    }
-}
-
-fn same_origin(left: &Url, right: &Url) -> bool {
-    left.scheme() == right.scheme()
-        && left.host_str() == right.host_str()
-        && left.port_or_known_default() == right.port_or_known_default()
-}
-
-fn same_url(left: &Url, right: &Url) -> bool {
-    same_origin(left, right) && left.path() == right.path() && left.query() == right.query()
-}
-
-fn path_has_prefix(path: &str, prefix: &str) -> bool {
-    if prefix == "/" {
-        return true;
-    }
-
-    if !path.starts_with(prefix) {
-        return false;
-    }
-
-    if prefix.ends_with('/') {
-        return true;
-    }
-
-    matches!(path.as_bytes().get(prefix.len()), None | Some(b'/'))
-}
-
-fn join_paths(base: &str, suffix: &str) -> String {
-    let mut result = base.trim_end_matches('/').to_string();
-    let suffix = suffix.trim_start_matches('/');
-
-    if result.is_empty() {
-        result.push('/');
-    }
-
-    if !suffix.is_empty() {
-        if !result.ends_with('/') {
-            result.push('/');
-        }
-        result.push_str(suffix);
-    }
-
-    result
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Rule, RuleKind, Rules};
+    use super::{Rule, RuleKind, Rules, UpstreamPlan};
     use url::Url;
 
     #[test]
@@ -198,18 +257,25 @@ mod tests {
         let rules = Rules {
             entries: vec![Rule {
                 kind: RuleKind::Prefix,
-                from: Url::parse("https://libraries.minecraft.net/").unwrap(),
-                to: Url::parse("https://bmclapi2.bangbang93.com/maven/").unwrap(),
+                origin: Url::parse("https://libraries.minecraft.net/").unwrap(),
+                upstream: UpstreamPlan {
+                    url: Url::parse("https://bmclapi2.bangbang93.com/maven/").unwrap(),
+                    sni: None,
+                    host: None,
+                    connect_host: None,
+                    connect_ip: None,
+                    dns: None,
+                },
             }],
         };
 
         let original =
             Url::parse("https://libraries.minecraft.net/com/example/demo/1.0/demo-1.0.jar")
                 .unwrap();
-        let rewritten = rules.rewrite(&original).unwrap().target;
+        let resolved = rules.resolve(&original).unwrap();
 
         assert_eq!(
-            rewritten.as_str(),
+            resolved.upstream.url.as_str(),
             "https://bmclapi2.bangbang93.com/maven/com/example/demo/1.0/demo-1.0.jar"
         );
     }
@@ -218,16 +284,23 @@ mod tests {
     fn preserves_query_string_for_prefix_rules() {
         let rule = Rule {
             kind: RuleKind::Prefix,
-            from: Url::parse("https://resources.download.minecraft.net/").unwrap(),
-            to: Url::parse("https://bmclapi2.bangbang93.com/assets/").unwrap(),
+            origin: Url::parse("https://resources.download.minecraft.net/").unwrap(),
+            upstream: UpstreamPlan {
+                url: Url::parse("https://bmclapi2.bangbang93.com/assets/").unwrap(),
+                sni: None,
+                host: None,
+                connect_host: None,
+                connect_ip: None,
+                dns: None,
+            },
         };
         let original =
             Url::parse("https://resources.download.minecraft.net/ab/cd?download=1").unwrap();
 
-        let rewritten = rule.rewrite(&original).unwrap();
+        let resolved = rule.resolve(&original).unwrap();
 
         assert_eq!(
-            rewritten.as_str(),
+            resolved.url.as_str(),
             "https://bmclapi2.bangbang93.com/assets/ab/cd?download=1"
         );
     }
@@ -236,15 +309,22 @@ mod tests {
     fn exact_rule_requires_full_url_match() {
         let rule = Rule {
             kind: RuleKind::Exact,
-            from: Url::parse("https://launchermeta.mojang.com/mc/game/version_manifest.json")
+            origin: Url::parse("https://launchermeta.mojang.com/mc/game/version_manifest.json")
                 .unwrap(),
-            to: Url::parse("https://bmclapi2.bangbang93.com/mc/game/version_manifest.json")
-                .unwrap(),
+            upstream: UpstreamPlan {
+                url: Url::parse("https://bmclapi2.bangbang93.com/mc/game/version_manifest.json")
+                    .unwrap(),
+                sni: None,
+                host: None,
+                connect_host: None,
+                connect_ip: None,
+                dns: None,
+            },
         };
         let unmatched =
             Url::parse("https://launchermeta.mojang.com/mc/game/version_manifest.json?v=2")
                 .unwrap();
 
-        assert!(rule.rewrite(&unmatched).is_none());
+        assert!(rule.resolve(&unmatched).is_none());
     }
 }

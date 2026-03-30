@@ -80,18 +80,33 @@ listen: 127.0.0.1:8787
 
 includes:
   # Prefix matching (default for URLs ending with /)
-  - from: https://libraries.minecraft.net/
-    to: https://bmclapi2.bangbang93.com/maven
+  - origin: https://libraries.minecraft.net/
+    upstream: 
+      url: https://bmclapi2.bangbang93.com/maven
     
   # Prefix matching (explicit)
   - kind: prefix
-    from: https://resources.download.minecraft.net/
-    to: https://bmclapi2.bangbang93.com/assets/
+    origin: https://resources.download.minecraft.net/
+    upstream:
+      url: https://bmclapi2.bangbang93.com/assets/
     
   # Exact matching (default for specific URLs)
   - kind: exact
-    from: https://maven.minecraftforge.net
-    to: https://bmclapi2.bangbang93.com/maven
+    origin: https://maven.minecraftforge.net
+    upstream:
+      url: https://bmclapi2.bangbang93.com/maven
+
+  # Advanced upstream overrides (SNI, Custom DNS, IP mapping)
+  - kind: exact
+    origin: https://example.com/api
+    upstream:
+      url: https://api.backend.local
+      connect_ip: 10.0.0.5     # Force connection to a specific IP
+      connect_host: api.internal.local # Force DNS resolution against a specific host
+      sni: backend.local       # Override TLS Sni server name
+      dns:
+        mode: doh              # DNS resolution mode: system, udp, or doh
+        server: https://dns.google/dns-query # DoH Server (or standard DNS IP for 'udp')
 ```
 
 ### Configuration Fields
@@ -102,7 +117,7 @@ includes:
 
 ### Rule Matching Modes
 
-- **prefix:** Matches any request where the URL path starts with the "from" path. Useful for redirecting entire directory trees. Query strings are preserved.
+- **prefix:** Matches any request where the URL path starts with the "origin" path. Useful for redirecting entire directory trees. Query strings are preserved.
 - **exact:** Matches only requests with the exact URL (scheme, host, port, path, and query must all match). Default mode for URLs not ending with `/`.
 
 If the `kind` field is omitted, it defaults to `prefix` for URLs ending with `/` and `exact` otherwise. The proxy handles both HTTP and HTTPS traffic transparently, extracting the original hostname and rewriting requests accordingly.
@@ -128,6 +143,12 @@ Both extraction methods work at the packet level without requiring TLS decryptio
 
 ## Technical Details
 
+- **IPv4 & IPv6 Dual-Stack Support:**
+  Transparent proxy mode captures both IPv4 and IPv6 traffic automatically, ensuring complete coverage in modern hybrid network environments.
+
+- **Full HTTP Capabilities:**
+  Seamless streaming of all HTTP methods (GET, POST, PUT, DELETE, etc.) including high-performance bidirectional request and response body forwarding powered by Hyper.
+
 - **WinDivert modes:**
   - `Network`: Captures traffic originating from or destined to the local host
   - `NetworkForward`: Captures traffic being forwarded through the host (enables gateway functionality for WSL, virtual machines, USB tethering, etc.)
@@ -140,10 +161,12 @@ Both extraction methods work at the packet level without requiring TLS decryptio
 
 ## Roadmap
 
-- [x] WinDivert-based L3 packet interception (Network and NetworkForward layers)
+- [x] WinDivert-based L3 packet interception (Network and NetworkForward layers for IPv4 and IPv6)
 - [x] SNI extraction for HTTPS interception
 - [x] Host header extraction for HTTP interception
-- [x] Async socket handling with Tokio and Rustls
+- [x] High-performance Hyper-based execution engine with full Request Body & Methods support
+- [x] Async socket handling with Tokio and pure Rustls
+- [x] Extensible Upstream Configuration (`connect_ip`, `connect_host`, `sni`, and `DoH` custom DNS)
 - [x] Command-line interface with clap
 - [ ] Configuration file watch and hot reload (automatic reload on config changes)
 - [ ] TUN/TAP device support for cross-platform deployment (macOS, Linux) with user-space TCP/IP stack

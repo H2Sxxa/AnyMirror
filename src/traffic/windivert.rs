@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{bail, ensure, Context, Result};
 
 #[cfg(target_os = "windows")]
 use windivert::prelude::{WinDivertFlags, WinDivertParam};
@@ -210,12 +210,6 @@ impl WinDivertRuntime {
         };
 
         let proxy_port = self.config.local_proxy_addr.port();
-        let _proxy_ip = match self.config.local_proxy_addr.ip() {
-            std::net::IpAddr::V4(v4) => v4.octets(),
-            std::net::IpAddr::V6(_) => {
-                bail!("IPv6 proxy address is not supported yet");
-            }
-        };
 
         macro_rules! run_windivert_loop {
             ($wd:ident) => {
@@ -229,7 +223,8 @@ impl WinDivertRuntime {
                     let mut rx_buf = vec![0u8; 65535];
 
                     // (Client_IP, Client_Port) -> (Real_Dest_IP, Real_Dest_Port)
-                    let mut nat_table: std::collections::HashMap<(std::net::Ipv4Addr, u16), (std::net::Ipv4Addr, u16)> = std::collections::HashMap::new();
+                    let mut nat_table_v4: std::collections::HashMap<(std::net::Ipv4Addr, u16), (std::net::Ipv4Addr, u16)> = std::collections::HashMap::new();
+                    let mut nat_table_v6: std::collections::HashMap<(std::net::Ipv6Addr, u16), (std::net::Ipv6Addr, u16)> = std::collections::HashMap::new();
 
                                         loop {
                         match $wd.recv(Some(&mut rx_buf)) {
@@ -249,17 +244,18 @@ impl WinDivertRuntime {
                                         if dst_port == 443 { target_proxy_port = proxy_port + 1; }
 
                                         if src_port == proxy_port || src_port == proxy_port + 1 {
-                                            if let Some(&(orig_dst_ip, orig_dst_port)) = nat_table.get(&(dst_ip, dst_port)) {
+                                            if let Some(&(orig_dst_ip, orig_dst_port)) = nat_table_v4.get(&(dst_ip, dst_port)) {
                                                 data[12..16].copy_from_slice(&orig_dst_ip.octets());
                                                 data[ip_header_len..ip_header_len + 2].copy_from_slice(&orig_dst_port.to_be_bytes());
                                                 packet.address.set_outbound(false); // Inject INBOUND so the client socket receives it!
                                                 modified = true;
                                             }
                                         } else if dst_port != proxy_port && dst_port != proxy_port + 1 {
-                                            nat_table.insert((src_ip, src_port), (dst_ip, dst_port));
+                                            nat_table_v4.insert((src_ip, src_port), (dst_ip, dst_port));
 
                                             // Change DstIP to loopback.
-                                            data[16..20].copy_from_slice(&src_ip.octets());
+                                            let src_octets = src_ip.octets();
+                                            data[16..20].copy_from_slice(&src_octets);
                                             data[ip_header_len + 2..ip_header_len + 4].copy_from_slice(&target_proxy_port.to_be_bytes());
 
                                             let mut host_info = String::new();
@@ -278,10 +274,59 @@ impl WinDivertRuntime {
                                             packet.address.set_outbound(false); // INBOUND to local stack
                                             modified = true;
                                             if syn || !host_info.is_empty() {
-                                                tracing::info!("Intercepted {}->{}:{} {}! Redirecting to {}:{}", src_port, dst_ip, dst_port, host_info, src_ip, target_proxy_port);
+                                                tracing::info!("Intercepted IPv4 {}->{}:{} {}! Redirecting to {}:{}", src_port, dst_ip, dst_port, host_info, src_ip, target_proxy_port);
                                             }
                                         }
                                     }
+                                } else if let Ok(ipv6_slice) = etherparse::Ipv6HeaderSlice::from_slice(data) {
+                                     let ip_header_len = ipv6_slice.slice().len();
+                                     if ipv6_slice.next_header() == etherparse::IpNumber::TCP && data.len() >= ip_header_len + 20 {
+                                        let mut src_octets = [0u8; 16];
+                                        let mut dst_octets = [0u8; 16];
+                                        src_octets.copy_from_slice(&data[8..24]);
+                                        dst_octets.copy_from_slice(&data[24..40]);
+
+                                        let src_ip = std::net::Ipv6Addr::from(src_octets);
+                                        let dst_ip = std::net::Ipv6Addr::from(dst_octets);
+                                        let src_port = u16::from_be_bytes([data[ip_header_len], data[ip_header_len + 1]]);
+                                        let dst_port = u16::from_be_bytes([data[ip_header_len + 2], data[ip_header_len + 3]]);
+
+                                        let mut target_proxy_port = proxy_port;
+                                        if dst_port == 443 { target_proxy_port = proxy_port + 1; }
+
+                                        if src_port == proxy_port || src_port == proxy_port + 1 {
+                                            if let Some(&(orig_dst_ip, orig_dst_port)) = nat_table_v6.get(&(dst_ip, dst_port)) {
+                                                data[8..24].copy_from_slice(&orig_dst_ip.octets());
+                                                data[ip_header_len..ip_header_len + 2].copy_from_slice(&orig_dst_port.to_be_bytes());
+                                                packet.address.set_outbound(false);
+                                                modified = true;
+                                            }
+                                        } else if dst_port != proxy_port && dst_port != proxy_port + 1 {
+                                            nat_table_v6.insert((src_ip, src_port), (dst_ip, dst_port));
+
+                                            data[24..40].copy_from_slice(&src_octets);
+                                            data[ip_header_len + 2..ip_header_len + 4].copy_from_slice(&target_proxy_port.to_be_bytes());
+
+                                            let mut host_info = String::new();
+                                            let mut syn = false;
+                                            if let Ok(tcp_slice) = etherparse::TcpHeaderSlice::from_slice(&data[ip_header_len..]) {
+                                                syn = tcp_slice.syn();
+                                                let tcp_header_len = tcp_slice.slice().len();
+                                                if ip_header_len + tcp_header_len < data.len() {
+                                                    let payload = &data[ip_header_len + tcp_header_len..];
+                                                    if let Some(host) = extract_host(payload) {
+                                                        host_info = format!("(Host: {}) ", host);
+                                                    }
+                                                }
+                                            }
+
+                                            packet.address.set_outbound(false);
+                                            modified = true;
+                                            if syn || !host_info.is_empty() {
+                                                tracing::info!("Intercepted IPv6 {}->{}:{} {}! Redirecting to {}:{}", src_port, dst_ip, dst_port, host_info, src_ip, target_proxy_port);
+                                            }
+                                        }
+                                     }
                                 }
 
                                 if modified {
@@ -333,16 +378,14 @@ pub fn default_filter(local_proxy_addr: SocketAddr, capture_loopback: bool) -> S
         " and !loopback"
     };
 
-    // To intercept outbound traffic but allow the proxy's own replies to be intercepted,
-    // we must conditionally capture tcp.SrcPort == proxy_port even on loopback.
     format!(
-        "outbound and ip and tcp and ( (tcp.DstPort != {} and tcp.DstPort != {}{}) or tcp.SrcPort == {} or tcp.SrcPort == {} )",
-        local_proxy_addr.port(),
-        local_proxy_addr.port() + 1,
-        loopback_clause,
-        local_proxy_addr.port(),
-        local_proxy_addr.port() + 1
-    )
+            "outbound and tcp and ( (tcp.DstPort != {} and tcp.DstPort != {}{}) or tcp.SrcPort == {} or tcp.SrcPort == {} )",
+            local_proxy_addr.port(),
+            local_proxy_addr.port() + 1,
+            loopback_clause,
+            local_proxy_addr.port(),
+            local_proxy_addr.port() + 1
+        )
 }
 
 fn validate_config(config: &WinDivertConfig) -> Result<()> {
@@ -466,7 +509,7 @@ fn build_flags(config: &WinDivertConfig) -> WinDivertFlags {
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-    use super::{WinDivertConfig, default_filter};
+    use super::{default_filter, WinDivertConfig};
 
     #[test]
     fn default_filter_excludes_proxy_port() {

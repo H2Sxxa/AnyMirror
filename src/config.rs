@@ -1,6 +1,6 @@
 use std::{fs, net::SocketAddr, path::Path};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 use crate::rules::Rules;

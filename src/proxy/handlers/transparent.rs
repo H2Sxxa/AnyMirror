@@ -1,18 +1,22 @@
 use axum::{
     body::Body,
     extract::State,
+    http::HeaderValue,
     http::{Method, Request, StatusCode},
     response::Response,
 };
 
-use super::{
-    forward::forward_request,
-    shared::{ensure_supported_method, json_error, resolve_transparent_target},
+use super::super::{
+    executor::UpstreamExecutor,
+    forwarding::forward_request,
+    request_parser::{ensure_supported_method, resolve_transparent_target, ORIGINAL_SCHEME_HEADER},
+    responses::json_error,
     state::AppState,
+    tls::TlsIntercepted,
 };
 
-pub(crate) async fn transparent_entry(
-    State(state): State<AppState>,
+pub(crate) async fn transparent_entry<E: UpstreamExecutor>(
+    State(state): State<AppState<E>>,
     request: Request<Body>,
 ) -> Response {
     if request.method() == Method::CONNECT {
@@ -26,22 +30,15 @@ pub(crate) async fn transparent_entry(
         return response;
     }
 
-    let scheme = if request
-        .extensions()
-        .get::<crate::proxy::tls::TlsIntercepted>()
-        .is_some()
-    {
+    let scheme = if request.extensions().get::<TlsIntercepted>().is_some() {
         "https"
     } else {
         "http"
     };
 
     let mut headers = request.headers().clone();
-    if !headers.contains_key(super::shared::ORIGINAL_SCHEME_HEADER) {
-        headers.insert(
-            super::shared::ORIGINAL_SCHEME_HEADER,
-            axum::http::HeaderValue::from_static(scheme),
-        );
+    if !headers.contains_key(ORIGINAL_SCHEME_HEADER) {
+        headers.insert(ORIGINAL_SCHEME_HEADER, HeaderValue::from_static(scheme));
     }
 
     let original = match resolve_transparent_target(&headers, request.uri()) {
@@ -52,7 +49,8 @@ pub(crate) async fn transparent_entry(
     forward_request(
         &state,
         request.method().clone(),
-        request.headers(),
+        &headers, // use our customized headers
+        request.into_body(),
         original,
         Some("transparent"),
     )

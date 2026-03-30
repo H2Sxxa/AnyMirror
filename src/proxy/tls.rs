@@ -1,18 +1,23 @@
-use anyhow::{Context, Result, anyhow};
-use axum::{Router, extract::Request};
-use hyper::body::Incoming;
-use hyper_util::rt::TokioIo;
-use hyper_util::server::conn::auto::Builder;
-use rcgen::{
-    BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair, KeyUsagePurpose,
+use anyhow::{anyhow, Context, Result};
+use axum::{extract::Request, middleware::map_request, Router};
+use hyper::{body::Incoming, service::service_fn};
+use hyper_util::{
+    rt::{TokioExecutor, TokioIo},
+    server::conn::auto::Builder,
 };
-use std::collections::HashMap;
-use std::{fs, path::Path, sync::Arc};
+use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair, KeyUsagePurpose};
+use rustls::crypto::ring::sign::any_supported_type;
+use std::net::SocketAddr;
 use std::sync::Mutex;
+use std::{collections::HashMap, io::Cursor};
+use std::{fs, path::Path, sync::Arc};
 use tokio::net::TcpListener;
+use tokio_rustls::rustls::{
+    server::{ClientHello, ResolvesServerCert},
+    sign::CertifiedKey,
+    ServerConfig,
+};
 use tokio_rustls::TlsAcceptor;
-use tokio_rustls::rustls::server::ResolvesServerCert;
-use tokio_rustls::rustls::{ServerConfig, sign::CertifiedKey};
 use tower::Service;
 
 #[derive(Clone, Debug)]
@@ -48,8 +53,8 @@ impl DynamicCertResolver {
             }
         }
 
-        let ca_key = KeyPair::from_pem(&self.ca_key_pem)
-            .context("failed to parse CA private key PEM")?;
+        let ca_key =
+            KeyPair::from_pem(&self.ca_key_pem).context("failed to parse CA private key PEM")?;
         let ca_issuer = Issuer::new(build_ca_params()?, ca_key);
 
         let mut leaf_params = CertificateParams::new(vec![hostname.to_string()])
@@ -65,19 +70,19 @@ impl DynamicCertResolver {
         let key_pem = leaf_key.serialize_pem();
 
         let full_chain_pem = format!("{}\n{}", leaf_cert_pem, self.ca_cert_pem);
-        let mut cert_reader = std::io::Cursor::new(full_chain_pem.as_bytes());
+        let mut cert_reader = Cursor::new(full_chain_pem.as_bytes());
         let certs: Vec<_> = rustls_pemfile::certs(&mut cert_reader)
             .collect::<Result<Vec<_>, _>>()
             .context("failed to parse generated cert")?;
 
-        let mut key_reader = std::io::Cursor::new(key_pem.as_bytes());
+        let mut key_reader = Cursor::new(key_pem.as_bytes());
         let private_key = rustls_pemfile::private_key(&mut key_reader)
             .context("failed to read private key")?
             .context("no private key found")?;
 
         // Use any_supported_type to handle all key types generically
-        let signing_key = rustls::crypto::ring::sign::any_supported_type(&private_key)
-            .context("unsupported or invalid private key")?;
+        let signing_key =
+            any_supported_type(&private_key).context("unsupported or invalid private key")?;
 
         let certified_key = Arc::new(CertifiedKey::new(certs, signing_key));
 
@@ -95,10 +100,7 @@ impl DynamicCertResolver {
 }
 
 impl ResolvesServerCert for DynamicCertResolver {
-    fn resolve(
-        &self,
-        client_hello: tokio_rustls::rustls::server::ClientHello,
-    ) -> Option<Arc<CertifiedKey>> {
+    fn resolve(&self, client_hello: ClientHello) -> Option<Arc<CertifiedKey>> {
         // Extract SNI hostname from client hello
         let hostname = client_hello.server_name().map(|sni| sni.to_string())?;
 
@@ -112,7 +114,7 @@ impl ResolvesServerCert for DynamicCertResolver {
     }
 }
 
-pub async fn serve_app_tls(app: Router, listen_addr: std::net::SocketAddr) -> Result<()> {
+pub async fn serve_app_tls(app: Router, listen_addr: SocketAddr) -> Result<()> {
     // Generate or load CA certificate
     let (ca_cert_pem, ca_key_pem) = get_or_generate_ca_cert()?;
 
@@ -127,12 +129,10 @@ pub async fn serve_app_tls(app: Router, listen_addr: std::net::SocketAddr) -> Re
     let acceptor = TlsAcceptor::from(Arc::new(config));
 
     // We inject TlsIntercepted into the request extensions directly in the router clone here
-    let app = app.layer(axum::middleware::map_request(
-        |mut req: Request| async move {
-            req.extensions_mut().insert(TlsIntercepted);
-            req
-        },
-    ));
+    let app = app.layer(map_request(|mut req: Request| async move {
+        req.extensions_mut().insert(TlsIntercepted);
+        req
+    }));
 
     let listener = TcpListener::bind(listen_addr).await?;
     tracing::info!(
@@ -165,10 +165,9 @@ pub async fn serve_app_tls(app: Router, listen_addr: std::net::SocketAddr) -> Re
             };
 
             let io = TokioIo::new(tls_stream);
-            let hyper_service =
-                hyper::service::service_fn(move |req: Request<Incoming>| app.clone().call(req));
+            let hyper_service = service_fn(move |req: Request<Incoming>| app.clone().call(req));
 
-            if let Err(err) = Builder::new(hyper_util::rt::TokioExecutor::new())
+            if let Err(err) = Builder::new(TokioExecutor::new())
                 .serve_connection(io, hyper_service)
                 .await
             {

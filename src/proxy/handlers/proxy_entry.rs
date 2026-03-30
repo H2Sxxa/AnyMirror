@@ -5,13 +5,18 @@ use axum::{
     response::Response,
 };
 
-use super::{
-    forward::forward_request,
-    shared::{ensure_supported_method, json_error, parse_absolute_url},
+use super::super::{
+    executor::UpstreamExecutor,
+    forwarding::forward_request,
+    request_parser::{ensure_supported_method, parse_absolute_url},
+    responses::json_error,
     state::AppState,
 };
 
-pub(crate) async fn proxy_entry(State(state): State<AppState>, request: Request<Body>) -> Response {
+pub(crate) async fn proxy_entry<E: UpstreamExecutor>(
+    State(state): State<AppState<E>>,
+    request: Request<Body>,
+) -> Response {
     if request.method() == Method::CONNECT {
         return json_error(
             StatusCode::NOT_IMPLEMENTED,
@@ -28,10 +33,13 @@ pub(crate) async fn proxy_entry(State(state): State<AppState>, request: Request<
         Err(response) => return response,
     };
 
+    let (parts, body) = request.into_parts();
+
     forward_request(
         &state,
-        request.method().clone(),
-        request.headers(),
+        parts.method,
+        &parts.headers,
+        body,
         original,
         Some("proxy"),
     )
