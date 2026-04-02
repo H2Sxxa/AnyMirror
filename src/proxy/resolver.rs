@@ -1,7 +1,9 @@
-use anyhow::{anyhow, Result};
 use std::net::IpAddr;
 use std::str::FromStr;
-use trust_dns_resolver::TokioAsyncResolver;
+
+use anyhow::{anyhow, Result};
+use hickory_resolver::config::{NameServerConfigGroup, ResolverConfig, ResolverOpts};
+use hickory_resolver::TokioResolver;
 
 use crate::rules::{DnsMode, DnsPlan};
 
@@ -16,21 +18,20 @@ use crate::rules::{DnsMode, DnsPlan};
 /// and is integrated into the custom hyper HTTP connector.
 #[allow(dead_code)]
 pub struct CustomResolver {
-    resolver: TokioAsyncResolver,
+    resolver: TokioResolver,
 }
 
 impl CustomResolver {
     /// Create the default system DNS resolver
-    #[allow(dead_code)]
     pub fn system() -> Result<Self> {
-        let resolver = TokioAsyncResolver::tokio_from_system_conf()
-            .map_err(|e| anyhow!("Failed to create system DNS resolver: {}", e))?;
+        let resolver = TokioResolver::builder_tokio()
+            .map_err(|error| anyhow!("Failed to create system DNS resolver: {}", error))?
+            .build();
 
         Ok(Self { resolver })
     }
 
     /// Create a resolver based on DnsPlan
-    #[allow(dead_code)]
     pub async fn from_plan(plan: &DnsPlan) -> Result<Self> {
         match plan.mode {
             DnsMode::System => Self::system(),
@@ -51,27 +52,26 @@ impl CustomResolver {
     }
 
     /// Create a UDP DNS resolver (Standard DNS)
-    #[allow(dead_code)]
     fn udp(server: &str) -> Result<Self> {
         let socket_addr: std::net::SocketAddr = if server.contains(':') {
             server
                 .parse()
-                .map_err(|e| anyhow!("Invalid DNS server address {}: {}", server, e))?
+                .map_err(|error| anyhow!("Invalid DNS server address {}: {}", server, error))?
         } else {
             format!("{}:53", server)
                 .parse()
-                .map_err(|e| anyhow!("Invalid DNS server address {}: {}", server, e))?
+                .map_err(|error| anyhow!("Invalid DNS server address {}: {}", server, error))?
         };
 
-        let group = trust_dns_resolver::config::NameServerConfigGroup::from_ips_clear(
-            &[socket_addr.ip()],
-            socket_addr.port(),
-            true,
-        );
-        let config = trust_dns_resolver::config::ResolverConfig::from_parts(None, vec![], group);
-
-        let resolver =
-            TokioAsyncResolver::tokio(config, trust_dns_resolver::config::ResolverOpts::default());
+        let group =
+            NameServerConfigGroup::from_ips_clear(&[socket_addr.ip()], socket_addr.port(), true);
+        let config = ResolverConfig::from_parts(None, vec![], group);
+        let resolver = TokioResolver::builder_with_config(
+            config,
+            hickory_resolver::name_server::TokioConnectionProvider::default(),
+        )
+        .with_options(ResolverOpts::default())
+        .build();
 
         Ok(Self { resolver })
     }
@@ -85,58 +85,55 @@ impl CustomResolver {
             format!("https://{}/dns-query", server)
         };
         let url = url::Url::parse(&server_url)
-            .map_err(|e| anyhow!("Invalid DoH server URL {}: {}", server, e))?;
+            .map_err(|error| anyhow!("Invalid DoH server URL {}: {}", server, error))?;
 
         let host = url
             .host_str()
             .ok_or_else(|| anyhow!("No host found in DoH server URL"))?;
         let port = url.port_or_known_default().unwrap_or(443);
 
-        // Resolve the DoH server's IP address using the system resolver first
-        let system_resolver = TokioAsyncResolver::tokio_from_system_conf().map_err(|e| {
-            anyhow!(
-                "Failed to create system DNS resolver for DoH bootstrap: {}",
-                e
-            )
-        })?;
+        let system_resolver = TokioResolver::builder_tokio()
+            .map_err(|error| {
+                anyhow!(
+                    "Failed to create system DNS resolver for DoH bootstrap: {}",
+                    error
+                )
+            })?
+            .build();
 
         let lookup = system_resolver
             .lookup_ip(host)
             .await
-            .map_err(|e| anyhow!("Failed to resolve DoH server host {}: {}", host, e))?;
+            .map_err(|error| anyhow!("Failed to resolve DoH server host {}: {}", host, error))?;
 
-        let ips: Vec<IpAddr> = lookup.iter().collect();
+        let ips = lookup.iter().collect::<Vec<IpAddr>>();
         if ips.is_empty() {
             return Err(anyhow!("No IPs found for DoH server {}", host));
         }
 
-        // NameServerConfigGroup::from_ips_https requires an SNI name (spki_name)
-        let group = trust_dns_resolver::config::NameServerConfigGroup::from_ips_https(
-            &ips,
-            port,
-            host.to_string(),
-            true, // trust_negative_responses
-        );
-        let config = trust_dns_resolver::config::ResolverConfig::from_parts(None, vec![], group);
+        let group = NameServerConfigGroup::from_ips_https(&ips, port, host.to_string(), true);
+        let config = ResolverConfig::from_parts(None, vec![], group);
+        let resolver = TokioResolver::builder_with_config(
+            config,
+            hickory_resolver::name_server::TokioConnectionProvider::default(),
+        )
+        .with_options(ResolverOpts::default())
+        .build();
 
-        let opts = trust_dns_resolver::config::ResolverOpts::default();
-        let resolver = TokioAsyncResolver::tokio(config, opts);
         Ok(Self { resolver })
     }
 
     /// Resolve a hostname to an IP address
     pub async fn resolve(&self, hostname: &str) -> Result<IpAddr> {
-        // Return immediately if it's already an IP address
         if let Ok(ip) = IpAddr::from_str(hostname) {
             return Ok(ip);
         }
 
-        // Use DNS resolution
         let lookup = self
             .resolver
             .lookup_ip(hostname)
             .await
-            .map_err(|e| anyhow!("DNS resolution failed for {}: {}", hostname, e))?;
+            .map_err(|error| anyhow!("DNS resolution failed for {}: {}", hostname, error))?;
 
         lookup
             .iter()
@@ -147,12 +144,14 @@ impl CustomResolver {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::str::FromStr;
+
+    use super::CustomResolver;
 
     #[tokio::test]
     async fn test_resolve_ip_string() {
         let resolver = CustomResolver::system().unwrap();
         let result = resolver.resolve("127.0.0.1").await.unwrap();
-        assert_eq!(result, IpAddr::from_str("127.0.0.1").unwrap());
+        assert_eq!(result, std::net::IpAddr::from_str("127.0.0.1").unwrap());
     }
 }

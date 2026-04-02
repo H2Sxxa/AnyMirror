@@ -77,6 +77,8 @@ cargo run -- --mode transparent --layer network-forward --config config.yml
 ```yaml
 listen: 127.0.0.1:8787
 # tls_port: 8788  # 可选：自定义 HTTPS 代理端口（如不指定，默认为 listen_port + 1）
+windivert:
+  hot_reload: false # 可选：保持请求过滤规则尽量收敛，并在 DNS 目标 IP 变化时热切换请求捕获代际
 
 includes:
   # 前缀匹配（以 / 结尾的 URL 默认方式）
@@ -112,6 +114,7 @@ includes:
 
 - **listen：** 代理服务绑定的地址和端口（例如 `127.0.0.1:8787`）
 - **tls_port** （可选）：自定义 HTTPS 代理端口。如不指定，默认为 `listen_port + 1`。例如 `listen` 为 `127.0.0.1:8787` 时，HTTPS 端口默认为 `8788`，除非在此指定其他端口。
+- **windivert.hot_reload** （可选）：启用后，透明模式会使用由 DNS 驱动的目标 IP 存储，并在活动目标 IP 集合变化时经过宽限期热切换新的 WinDivert 请求捕获代际，而不是让单个长期句柄不断变宽或无限累积。
 - **includes：** URL 重定向规则列表（见下方规则匹配模式）
 
 ### 规则匹配模式

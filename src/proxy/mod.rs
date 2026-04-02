@@ -10,6 +10,5 @@ mod router;
 mod runtime;
 mod state;
 mod tls;
-mod transparent_bootstrap;
 
 pub use runtime::{serve_explicit, serve_transparent};

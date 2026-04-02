@@ -4,7 +4,7 @@ use std::sync::Arc;
 use axum::Router;
 
 use crate::config::AppConfig;
-use crate::traffic::windivert::{WinDivertConfig, WinDivertLayer, WinDivertRuntime};
+use crate::traffic::windivert::{run_transparent_windivert_runtimes, WinDivertLayer};
 
 use super::{
     executor::HyperExecutor,
@@ -13,7 +13,6 @@ use super::{
     router::build_common_router,
     state::AppState,
     tls,
-    transparent_bootstrap::{build_transparent_filter, resolve_origin_target_ips},
 };
 
 pub async fn serve_explicit(config: AppConfig) -> anyhow::Result<()> {
@@ -34,24 +33,7 @@ pub async fn serve_transparent(config: AppConfig, layer: WinDivertLayer) -> anyh
         .fallback(transparent_entry)
         .with_state(state.clone());
 
-    let target_ips = resolve_origin_target_ips(&config.rules);
-    let custom_filter = build_transparent_filter(listen_addr, &target_ips);
-
-    tracing::info!(
-        "WinDivert will filter out these resolved target IPs: {:?}",
-        target_ips
-    );
-
-    let wd_config = WinDivertConfig {
-        local_proxy_addr: proxy_redirect_addr,
-        filter: custom_filter,
-        sniff: false,
-        layer,
-        ..Default::default()
-    };
-    let wd_runtime = WinDivertRuntime::new(wd_config)?;
-    wd_runtime.start()?;
-    tracing::info!("WinDivert capturing started: {}", wd_runtime.plan_summary());
+    run_transparent_windivert_runtimes(&config, proxy_redirect_addr, layer)?;
 
     let mut https_listen_addr = listen_addr;
     let tls_port = config.tls_port.unwrap_or_else(|| listen_addr.port() + 1);

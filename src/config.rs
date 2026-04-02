@@ -9,7 +9,13 @@ use crate::rules::Rules;
 pub struct AppConfig {
     pub listen_addr: SocketAddr,
     pub tls_port: Option<u16>,
+    pub windivert: WinDivertOptions,
     pub rules: Rules,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct WinDivertOptions {
+    pub hot_reload: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -17,11 +23,19 @@ struct RawConfig {
     #[serde(default = "default_listen_addr")]
     listen: String,
     tls_port: Option<u16>,
+    #[serde(default)]
+    windivert: RawWinDivertOptions,
     #[serde(default, alias = "rules")]
     includes: Vec<crate::rules::RawRule>,
     #[allow(dead_code)]
     #[serde(default)]
     classes: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RawWinDivertOptions {
+    #[serde(default)]
+    hot_reload: bool,
 }
 
 pub fn load_config(path: impl AsRef<Path>) -> Result<AppConfig> {
@@ -44,10 +58,19 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<AppConfig> {
     Ok(AppConfig {
         listen_addr,
         tls_port: parsed.tls_port,
+        windivert: WinDivertOptions::from(parsed.windivert),
         rules,
     })
 }
 
 fn default_listen_addr() -> String {
     "127.0.0.1:8787".to_string()
+}
+
+impl From<RawWinDivertOptions> for WinDivertOptions {
+    fn from(value: RawWinDivertOptions) -> Self {
+        Self {
+            hot_reload: value.hot_reload,
+        }
+    }
 }
