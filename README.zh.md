@@ -4,14 +4,15 @@ AnyMirror 是一款用 Rust 编写的透明 L3 代理工具，可以在网络层
 
 ## 原理概述
 
-AnyMirror 在第 3 层（网络层）工作，流程如下：
+AnyMirror 现在采用基于 fake-ip 的透明代理链路：
 
-1. **拦截数据包：** 使用 WinDivert 驱动程序捕获所有符合过滤规则的出站 TCP 流量。
-2. **提取主机名：** 对于 HTTPS 请求从 TLS ClientHello 中提取 SNI；对于 HTTP 请求提取 Host 头。
-3. **执行 NAT 重定向：** 修改捕获数据包的目标 IP 和端口，然后重新注入到本地网络栈，伪装成来自本机代理服务的请求。
-4. **处理响应：** 维护 NAT 转换表，将来自代理的响应反向映射并还原原始目标信息。
+1. **分配 fake-ip：** `FakeDnsServer` 为命中规则的 origin host 返回 fake A/AAAA 记录。
+2. **拦截 fake-ip 流量：** 当前的拦截后端是 WinDivert，它只处理 DNS 查询和目标地址落在 fake-ip 网段中的 TCP 流量。
+3. **执行 NAT 重定向：** 被截获的连接会被改写到本地透明代理监听端口，同时共享 NAT 表会保存原始目标信息。
+4. **解析转发规则：** 本地代理根据 HTTP Host 或 HTTPS SNI 还原原始 URL，再决定走镜像还是回源直连。
+5. **还原响应：** 拦截后端在响应返回客户端之前，根据共享 NAT 表把代理响应改回原始目标四元组。
 
-这种方式对应用程序完全透明，无需任何客户端配置、代理设置或环境变量修改。
+这种方式既保持了对应用透明，也避免了传统“按真实 IP 拦截”方案里“同一真实 IP 下多个 host 串流量”的问题。
 
 ## 典型应用场景
 
@@ -56,18 +57,20 @@ AnyMirror 在第 3 层（网络层）工作，流程如下：
 
 ## 使用方法
 
+下面的示例假定构建后的可执行文件已经以 `anymirror` 的名字加入 `PATH`。
+
 ```bash
 # 查看帮助信息
-cargo run -- --help
+anymirror --help
 
 # 显式代理模式（标准 HTTP/HTTPS 代理，监听 8787 端口）
-cargo run -- --mode explicit --config config.yml
+anymirror --mode explicit --config config.yml
 
 # 透明代理模式（拦截本地出站流量）
-cargo run -- --mode transparent --config config.yml
+anymirror --mode transparent --config config.yml
 
-# 透明网关模式（拦截来自 LAN/WSL/虚拟机的转发流量）
-cargo run -- --mode transparent --layer network-forward --config config.yml
+# 透明网关模式：把 config.yml 里的 backend.windivert.layer 改成 network-forward
+anymirror --mode transparent --config config.yml
 ```
 
 ## 配置文件
@@ -77,12 +80,14 @@ cargo run -- --mode transparent --layer network-forward --config config.yml
 ```yaml
 listen: 127.0.0.1:8787
 # tls_port: 8788  # 可选：自定义 HTTPS 代理端口（如不指定，默认为 listen_port + 1）
-shared:
+backend:
   dns:
     listen: 127.0.0.1:15353     # 本地 fake-ip DNS 服务监听地址，Windows 上 5353 往往会被 mDNS 占用
     fake_ipv4_range: 198.18.0.0/16
     fake_ipv6_range: fd00:198:18::/48
     record_ttl_secs: 60
+  windivert:
+    layer: network              # network 或 network-forward
 
 includes:
   # 前缀匹配（以 / 结尾的 URL 默认方式）
@@ -118,10 +123,11 @@ includes:
 
 - **listen：** 代理服务绑定的地址和端口（例如 `127.0.0.1:8787`）
 - **tls_port** （可选）：自定义 HTTPS 代理端口。如不指定，默认为 `listen_port + 1`。例如 `listen` 为 `127.0.0.1:8787` 时，HTTPS 端口默认为 `8788`，除非在此指定其他端口。
-- **shared.dns.listen**：本地 fake-ip DNS 服务地址。透明 fake-ip 模式要求系统或应用的 DNS 查询发到这里。
-- **shared.dns.fake_ipv4_range**：透明重定向使用的 IPv4 fake-ip 地址池。WinDivert 只会拦截目标地址落在这个网段内的 TCP 连接。
-- **shared.dns.fake_ipv6_range**：透明重定向使用的 IPv6 fake-ip 地址池。WinDivert 也会拦截目标地址落在这个网段内的 TCP 连接。
-- **shared.dns.record_ttl_secs**：生成 fake A 和 AAAA 记录时使用的 TTL。
+- **backend.dns.listen**：本地 fake-ip DNS 服务地址。透明 fake-ip 模式要求系统或应用的 DNS 查询发到这里。
+- **backend.dns.fake_ipv4_range**：透明重定向使用的 IPv4 fake-ip 地址池。WinDivert 只会拦截目标地址落在这个网段内的 TCP 连接。
+- **backend.dns.fake_ipv6_range**：透明重定向使用的 IPv6 fake-ip 地址池。WinDivert 也会拦截目标地址落在这个网段内的 TCP 连接。
+- **backend.dns.record_ttl_secs**：生成 fake A 和 AAAA 记录时使用的 TTL。
+- **backend.windivert.layer**：透明模式下 WinDivert 使用的捕获层。`network` 用于本机流量，`network-forward` 用于 WSL、虚拟机或网关场景下的转发流量。
 - **includes：** URL 重定向规则列表（见下方规则匹配模式）
 
 ### 规则匹配模式
@@ -133,22 +139,80 @@ includes:
 
 ## 架构设计
 
-### L3 代理实现
+### 透明代理主链路
 
-透明代理使用 WinDivert 在 IP 层截获数据包：
+```text
+                      +----------------------+
+                      |      AppConfig       |
+                      | rules / dns / ports  |
+                      +----------+-----------+
+                                 |
+                                 v
++-----------------------------------------------------------+
+|                    Transparent Runtime                    |
+|             proxy::runtime::serve_transparent             |
++----------------------+----------------+-------------------+
+                       |                |
+                       |                |
+                       v                v
+             +---------+----+    +------+------------------+
+             | FakeDnsServer |    |   Intercept Backend    |
+             | shared/dns    |    |   当前实现: WinDivert  |
+             +---------+----+    +------+------------------+
+                       |                |
+                       |                |
+                       |                v
+                       |      +---------+------------------+
+                       |      |  DNS UDP responder         |
+                       |      |  DNS TCP redirect          |
+                       |      |  Fake-IP TCP redirect      |
+                       |      |  QUIC drop policy          |
+                       |      |  Proxy response rewrite    |
+                       |      +---------+------------------+
+                       |                |
+                       |                v
+                       |      +---------+------------------+
+                       |      |        Shared NAT          |
+                       |      |     traffic/shared/nat     |
+                       |      +---------+------------------+
+                       |                |
+                       +----------------+
+                                        |
+                                        v
+                        +---------------+---------------+
+                        |     Local Transparent Proxy   |
+                        | HTTP :8787 / TLS :8788        |
+                        +---------------+---------------+
+                                        |
+                                        v
+                             +----------+----------+
+                             |    Rule Resolution  |
+                             |  mirror or direct   |
+                             +----------+----------+
+                                        |
+                      +-----------------+-----------------+
+                      |                                   |
+                      v                                   v
+               +------+-------+                    +------+------+
+               | Mirror Upstream|                  | Original Up |
+               +----------------+                  +-------------+
+```
 
-- **出站重定向：** 应用程序发送对 blocked.example.com:443 的请求时，WinDivert 在数据包离开主机前将其截获。代理修改目标 IP 为 127.0.0.1、目标端口为 8788，然后重新注入网络栈。本地代理服务在该端口接收连接。
+### 职责划分
 
-- **入站响应处理：** 代理响应返回时，WinDivert 识别这是代理服务的响应，反向执行 NAT 转换，在数据包返回客户端应用之前还原原始目标信息。
+- **FakeDnsServer：** 负责为命中规则的 origin host 分配 fake-ip，并生成 DNS 响应。
+- **Intercept Backend：** 负责做数据包拦截。当前实现是 WinDivert，后续也可以替换成 TUN/TAP 后端。
+- **Shared NAT：** 维护 `(client_ip, client_port) -> (original_destination_ip, original_destination_port)` 映射，用于把代理响应改回原始目标。
+- **Local Transparent Proxy：** 根据 HTTP Host 或 HTTPS SNI 还原原始请求目标，并决定是走镜像还是回源直连。
 
-- **连接隔离：** 通过 NAT 转换表维护 (client_ip, client_port) 与 (original_destination_ip, original_destination_port) 的映射关系，确保响应正确路由。
+### 请求流程
 
-### 主机名识别
-
-- **HTTP 请求：** 代理从 Host 头提取原始目标。
-- **HTTPS 请求：** 代理从 TLS ClientHello 握手数据包中提取 SNI（服务器名称指示），在加密连接建立前进行。
-
-两种提取方式都在数据包级别工作，不需要在初始截获阶段进行 TLS 解密。
+1. 应用先解析某个命中规则的域名。
+2. `FakeDnsServer` 返回来自 fake-ip 地址池的 fake IPv4 或 fake IPv6。
+3. 拦截后端截获发往 fake-ip 的 TCP 连接，并将其重定向到本地代理监听端口。
+4. 本地代理还原原始 URL，然后执行规则匹配。
+5. 命中规则则转发到镜像，不命中则回源直连。
+6. 共享 NAT 让拦截后端可以在响应返回客户端前，把代理响应还原成原始目标连接。
 
 ## 技术细节
 
@@ -158,7 +222,7 @@ includes:
 - **完整的 HTTP 能力支持：**
   通过 Hyper 引擎实现对所有 HTTP 方法（GET、POST、PUT、DELETE 等）的支持，以及双向高性能流式的请求体和响应体转发。
 
-- **WinDivert 模式：**
+- **WinDivert 模式（当前拦截后端）：**
   - `Network`：捕获源自或目标为本地主机的流量
   - `NetworkForward`：捕获通过主机转发的流量（为 WSL、虚拟机、USB 网络共享等启用网关功能）
 

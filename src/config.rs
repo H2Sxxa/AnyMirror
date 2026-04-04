@@ -5,18 +5,25 @@ use ipnet::{Ipv4Net, Ipv6Net};
 use serde::Deserialize;
 
 use crate::rules::Rules;
+use crate::traffic::windivert::WinDivertLayer;
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub listen_addr: SocketAddr,
     pub tls_port: Option<u16>,
-    pub shared: SharedOptions,
+    pub backend: BackendOptions,
     pub rules: Rules,
 }
 
 #[derive(Debug, Clone)]
-pub struct SharedOptions {
+pub struct BackendOptions {
     pub dns: FakeDnsOptions,
+    pub windivert: WinDivertBackendOptions,
+}
+
+#[derive(Debug, Clone)]
+pub struct WinDivertBackendOptions {
+    pub layer: WinDivertLayer,
 }
 
 #[derive(Debug, Clone)]
@@ -33,7 +40,7 @@ struct RawConfig {
     listen: String,
     tls_port: Option<u16>,
     #[serde(default)]
-    shared: RawSharedOptions,
+    backend: RawBackendOptions,
     #[serde(default, alias = "rules")]
     includes: Vec<crate::rules::RawRule>,
     #[allow(dead_code)]
@@ -42,14 +49,30 @@ struct RawConfig {
 }
 
 #[derive(Debug, Deserialize, Default)]
-struct RawSharedOptions {
+struct RawBackendOptions {
     #[serde(default)]
     dns: RawFakeDnsOptions,
+    #[serde(default)]
+    windivert: RawWinDivertBackendOptions,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawWinDivertBackendOptions {
+    #[serde(default = "default_windivert_layer")]
+    layer: String,
+}
+
+impl Default for RawWinDivertBackendOptions {
+    fn default() -> Self {
+        Self {
+            layer: default_windivert_layer(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
 struct RawFakeDnsOptions {
-    #[serde(default = "default_shared_dns_listen_addr")]
+    #[serde(default = "default_backend_dns_listen_addr")]
     listen: String,
     #[serde(default = "default_fake_ipv4_range")]
     fake_ipv4_range: String,
@@ -62,7 +85,7 @@ struct RawFakeDnsOptions {
 impl Default for RawFakeDnsOptions {
     fn default() -> Self {
         Self {
-            listen: default_shared_dns_listen_addr(),
+            listen: default_backend_dns_listen_addr(),
             fake_ipv4_range: default_fake_ipv4_range(),
             fake_ipv6_range: default_fake_ipv6_range(),
             record_ttl_secs: default_fake_ip_record_ttl_secs(),
@@ -90,7 +113,7 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<AppConfig> {
     Ok(AppConfig {
         listen_addr,
         tls_port: parsed.tls_port,
-        shared: SharedOptions::try_from(parsed.shared)?,
+        backend: BackendOptions::try_from(parsed.backend)?,
         rules,
     })
 }
@@ -99,12 +122,23 @@ fn default_listen_addr() -> String {
     "127.0.0.1:8787".to_string()
 }
 
-impl TryFrom<RawSharedOptions> for SharedOptions {
+impl TryFrom<RawBackendOptions> for BackendOptions {
     type Error = anyhow::Error;
 
-    fn try_from(value: RawSharedOptions) -> Result<Self> {
+    fn try_from(value: RawBackendOptions) -> Result<Self> {
         Ok(Self {
             dns: FakeDnsOptions::try_from(value.dns)?,
+            windivert: WinDivertBackendOptions::try_from(value.windivert)?,
+        })
+    }
+}
+
+impl TryFrom<RawWinDivertBackendOptions> for WinDivertBackendOptions {
+    type Error = anyhow::Error;
+
+    fn try_from(value: RawWinDivertBackendOptions) -> Result<Self> {
+        Ok(Self {
+            layer: parse_windivert_layer(&value.layer)?,
         })
     }
 }
@@ -116,16 +150,16 @@ impl TryFrom<RawFakeDnsOptions> for FakeDnsOptions {
         let listen_addr = value
             .listen
             .parse()
-            .with_context(|| format!("invalid shared.dns.listen `{}`", value.listen))?;
+            .with_context(|| format!("invalid backend.dns.listen `{}`", value.listen))?;
         let fake_ipv4_range = value.fake_ipv4_range.parse::<Ipv4Net>().with_context(|| {
             format!(
-                "invalid shared.dns.fake_ipv4_range `{}`",
+                "invalid backend.dns.fake_ipv4_range `{}`",
                 value.fake_ipv4_range
             )
         })?;
         let fake_ipv6_range = value.fake_ipv6_range.parse::<Ipv6Net>().with_context(|| {
             format!(
-                "invalid shared.dns.fake_ipv6_range `{}`",
+                "invalid backend.dns.fake_ipv6_range `{}`",
                 value.fake_ipv6_range
             )
         })?;
@@ -139,8 +173,12 @@ impl TryFrom<RawFakeDnsOptions> for FakeDnsOptions {
     }
 }
 
-fn default_shared_dns_listen_addr() -> String {
+fn default_backend_dns_listen_addr() -> String {
     "127.0.0.1:15353".to_string()
+}
+
+fn default_windivert_layer() -> String {
+    "network".to_string()
 }
 
 fn default_fake_ipv4_range() -> String {
@@ -153,4 +191,15 @@ fn default_fake_ipv6_range() -> String {
 
 fn default_fake_ip_record_ttl_secs() -> u64 {
     60
+}
+
+fn parse_windivert_layer(value: &str) -> Result<WinDivertLayer> {
+    match value {
+        "network" => Ok(WinDivertLayer::Network),
+        "network-forward" | "network_forward" => Ok(WinDivertLayer::NetworkForward),
+        _ => bail!(
+            "invalid backend.windivert.layer `{}` (expected `network` or `network-forward`)",
+            value
+        ),
+    }
 }

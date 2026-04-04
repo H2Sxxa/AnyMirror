@@ -2,7 +2,7 @@ mod fake_ip;
 
 use std::{
     collections::HashSet,
-    net::{IpAddr, Ipv6Addr, SocketAddr, TcpListener as StdTcpListener, UdpSocket as StdUdpSocket},
+    net::{IpAddr, Ipv6Addr, SocketAddr},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -21,7 +21,10 @@ use hickory_server::{
     authority::MessageResponseBuilder,
     server::{Request, RequestHandler, ResponseHandler, ResponseInfo, ServerFuture},
 };
-use tokio::spawn;
+use tokio::{
+    net::{TcpListener, UdpSocket},
+    spawn,
+};
 
 use crate::config::FakeDnsOptions;
 use crate::rules::Rules;
@@ -64,7 +67,7 @@ impl FakeDnsServer {
     pub async fn start(options: FakeDnsOptions, rules: &Rules) -> Result<Self> {
         let state = Arc::new(FakeDnsState::new(options, rules)?);
         let server = Self { state };
-        server.spawn()?;
+        server.spawn().await?;
         Ok(server)
     }
 
@@ -93,15 +96,26 @@ impl FakeDnsServer {
         }
     }
 
-    fn spawn(&self) -> Result<()> {
-        let udp_socket = self.bind_udp_socket()?;
+    async fn spawn(&self) -> Result<()> {
+        let udp_socket = UdpSocket::bind(self.state.options.listen_addr)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to bind fake DNS UDP server on {}",
+                    self.state.options.listen_addr
+                )
+            })?;
         let udp_addr = udp_socket.local_addr().with_context(|| {
             format!(
                 "failed to read UDP socket address for {}",
                 self.state.options.listen_addr
             )
         })?;
-        let tcp_listener = self.bind_tcp_listener()?;
+        let port = self.state.options.listen_addr.port();
+        let tcp_listener =
+            TcpListener::bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port))
+                .await
+                .with_context(|| format!("failed to bind fake DNS TCP server on [::]:{}", port))?;
         let tcp_addr = tcp_listener
             .local_addr()
             .context("failed to read fake DNS TCP listener address")?;
@@ -109,12 +123,8 @@ impl FakeDnsServer {
         let mut server = ServerFuture::new(FakeDnsHandler {
             state: self.state.clone(),
         });
-        server
-            .register_socket_std(udp_socket)
-            .context("failed to register fake DNS UDP socket")?;
-        server
-            .register_listener_std(tcp_listener, DNS_TCP_REQUEST_TIMEOUT)
-            .context("failed to register fake DNS TCP listener")?;
+        server.register_socket(udp_socket);
+        server.register_listener(tcp_listener, DNS_TCP_REQUEST_TIMEOUT);
 
         spawn(async move {
             if let Err(error) = server.block_until_done().await {
@@ -132,30 +142,6 @@ impl FakeDnsServer {
         );
 
         Ok(())
-    }
-
-    fn bind_udp_socket(&self) -> Result<StdUdpSocket> {
-        let socket = StdUdpSocket::bind(self.state.options.listen_addr).with_context(|| {
-            format!(
-                "failed to bind fake DNS UDP server on {}",
-                self.state.options.listen_addr
-            )
-        })?;
-        socket
-            .set_nonblocking(true)
-            .context("failed to configure fake DNS UDP socket as non-blocking")?;
-        Ok(socket)
-    }
-
-    fn bind_tcp_listener(&self) -> Result<StdTcpListener> {
-        let port = self.state.options.listen_addr.port();
-        let listener =
-            StdTcpListener::bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port))
-                .with_context(|| format!("failed to bind fake DNS TCP server on [::]:{}", port))?;
-        listener
-            .set_nonblocking(true)
-            .context("failed to configure fake DNS TCP listener as non-blocking")?;
-        Ok(listener)
     }
 }
 

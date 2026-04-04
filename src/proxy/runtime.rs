@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv6Addr, SocketAddr, TcpListener as StdTcpListener};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -8,7 +8,7 @@ use tokio::spawn;
 
 use crate::config::AppConfig;
 use crate::traffic::shared::FakeDnsServer;
-use crate::traffic::windivert::{run_transparent_windivert_runtimes, WinDivertLayer};
+use crate::traffic::windivert::run_transparent_windivert_runtimes;
 
 use super::{
     executor::HyperExecutor,
@@ -25,24 +25,30 @@ pub async fn serve_explicit(config: AppConfig) -> Result<()> {
     let app = build_common_router::<HyperExecutor>()
         .fallback(proxy_entry)
         .with_state(state);
-    serve_app(app, listen_addr).await
+    let listener = TcpListener::bind(listen_addr).await?;
+    serve_app_with_listener(app, listener).await
 }
 
-pub async fn serve_transparent(config: AppConfig, layer: WinDivertLayer) -> Result<()> {
-    let fake_dns_server = FakeDnsServer::start(config.shared.dns.clone(), &config.rules).await?;
+pub async fn serve_transparent(config: AppConfig) -> Result<()> {
+    let fake_dns_server = FakeDnsServer::start(config.backend.dns.clone(), &config.rules).await?;
     let state = build_state(config.clone())?;
     let proxy_redirect_addr = state.listen_addr;
-    let http_listener = bind_transparent_listener(proxy_redirect_addr.port())?;
+    let http_listener = TcpListener::bind(SocketAddr::new(
+        IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+        proxy_redirect_addr.port(),
+    ))
+    .await?;
     let app = build_common_router::<HyperExecutor>()
         .fallback(transparent_entry)
         .with_state(state.clone());
 
-    run_transparent_windivert_runtimes(&config, fake_dns_server, proxy_redirect_addr, layer)?;
+    run_transparent_windivert_runtimes(&config, fake_dns_server, proxy_redirect_addr)?;
 
     let tls_port = config
         .tls_port
         .unwrap_or_else(|| proxy_redirect_addr.port() + 1);
-    let tls_listener = bind_transparent_listener(tls_port)?;
+    let tls_listener =
+        TcpListener::bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), tls_port)).await?;
 
     let app_for_tls = app.clone();
     spawn(async move {
@@ -62,21 +68,10 @@ fn build_state(config: AppConfig) -> Result<AppState<HyperExecutor>> {
     })
 }
 
-async fn serve_app(app: Router, listen_addr: SocketAddr) -> Result<()> {
-    let listener = TcpListener::bind(listen_addr).await?;
-    serve_app_with_listener(app, listener).await
-}
-
 async fn serve_app_with_listener(app: Router, listener: TcpListener) -> Result<()> {
     serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
 
     Ok(())
-}
-
-fn bind_transparent_listener(port: u16) -> Result<TcpListener> {
-    let listener = StdTcpListener::bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port))?;
-    listener.set_nonblocking(true)?;
-    Ok(TcpListener::from_std(listener)?)
 }

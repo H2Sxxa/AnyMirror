@@ -8,29 +8,11 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use traffic::windivert::WinDivertLayer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ServerMode {
     Explicit,
     Transparent,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum CaptureLayer {
-    /// Intercept local network traffic (default)
-    Network,
-    /// Intercept forwarded network traffic (e.g. from WSL, virtual machines or LAN)
-    NetworkForward,
-}
-
-impl From<CaptureLayer> for WinDivertLayer {
-    fn from(layer: CaptureLayer) -> Self {
-        match layer {
-            CaptureLayer::Network => WinDivertLayer::Network,
-            CaptureLayer::NetworkForward => WinDivertLayer::NetworkForward,
-        }
-    }
 }
 
 #[derive(Parser, Debug)]
@@ -39,10 +21,6 @@ pub struct Cli {
     /// Start proxy in explicit or transparent mode
     #[arg(short, long, value_enum, default_value_t = ServerMode::Explicit)]
     pub mode: ServerMode,
-
-    /// Specifies the WinDivert capture layer to use when using transparent mode
-    #[arg(short, long, value_enum, default_value_t = CaptureLayer::Network)]
-    pub layer: CaptureLayer,
 
     /// Path to the configuration file
     #[arg(short = 'c', long = "config", default_value = "config.yml")]
@@ -81,6 +59,6 @@ async fn main() -> Result<()> {
 
     match cli.mode {
         ServerMode::Explicit => proxy::serve_explicit(config).await,
-        ServerMode::Transparent => proxy::serve_transparent(config, cli.layer.into()).await,
+        ServerMode::Transparent => proxy::serve_transparent(config).await,
     }
 }

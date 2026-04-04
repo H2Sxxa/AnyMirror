@@ -4,14 +4,15 @@ AnyMirror is a transparent L3 proxy and URL redirection tool written in Rust. It
 
 ## Overview
 
-AnyMirror operates at Layer 3 (Network Layer) by:
+AnyMirror operates as a transparent fake-ip pipeline:
 
-1. **Intercepting packets:** Using WinDivert driver to capture all outbound TCP traffic matching filter rules.
-2. **Extracting host information:** Parsing SNI from TLS ClientHello for HTTPS requests and extracting Host header from HTTP requests.
-3. **Performing NAT redirection:** Modifying destination IP and port in captured packets, then injecting them back into the local network stack as if they originated from the proxy service running on localhost.
-4. **Handling responses:** Maintaining a NAT translation table to reverse-map incoming responses and restore original destination information.
+1. **Allocating fake IPs:** `FakeDnsServer` returns fake A/AAAA records for configured origin hosts.
+2. **Intercepting fake-ip traffic:** The current intercept backend, WinDivert, only captures DNS queries and TCP traffic whose destination falls inside the fake-ip ranges.
+3. **Performing NAT redirection:** Captured connections are rewritten to the local transparent proxy listeners while a shared NAT table keeps the original destination mapping.
+4. **Resolving mirror rules:** The local proxy reconstructs the original URL from HTTP Host or HTTPS SNI and decides whether to forward to a mirror or pass through to the original upstream.
+5. **Restoring responses:** The intercept backend rewrites proxy responses back to the original destination tuple before the client receives them.
 
-This approach works transparently to applications - no client configuration, proxy settings, or environment variables are needed.
+This approach stays transparent to applications while avoiding the classic "same real IP, different host" problem that appears in IP-only interception designs.
 
 ## Typical Use Cases
 
@@ -56,18 +57,20 @@ When running in transparent mode, anymirror intercepts HTTPS traffic and re-encr
 
 ## Usage
 
+The examples below assume the built executable is available on your `PATH` as `anymirror`.
+
 ```bash
 # Display help
-cargo run -- --help
+anymirror --help
 
 # Explicit proxy mode (standard HTTP/HTTPS proxy on port 8787)
-cargo run -- --mode explicit --config config.yml
+anymirror --mode explicit --config config.yml
 
 # Transparent mode (intercepts outbound traffic locally)
-cargo run -- --mode transparent --config config.yml
+anymirror --mode transparent --config config.yml
 
-# Transparent gateway mode (intercepts forwarded traffic from LAN/WSL/virtual machines)
-cargo run -- --mode transparent --layer network-forward --config config.yml
+# Transparent gateway mode: set backend.windivert.layer to network-forward in config.yml
+anymirror --mode transparent --config config.yml
 ```
 
 ## Configuration
@@ -77,12 +80,14 @@ Create a `config.yml` file with your redirection rules:
 ```yaml
 listen: 127.0.0.1:8787
 # tls_port: 8788  # Optional: customize HTTPS proxy port (default: listen_port + 1)
-shared:
+backend:
   dns:
     listen: 127.0.0.1:15353     # Local fake-ip DNS server; 5353 is commonly occupied by mDNS on Windows
     fake_ipv4_range: 198.18.0.0/16
     fake_ipv6_range: fd00:198:18::/48
     record_ttl_secs: 60
+  windivert:
+    layer: network              # network or network-forward
 
 includes:
   # Prefix matching (default for URLs ending with /)
@@ -119,10 +124,11 @@ includes:
 
 - **listen:** Server address and port to bind to (e.g., `127.0.0.1:8787`)
 - **tls_port** (optional): Custom HTTPS proxy port. If not specified, defaults to `listen_port + 1`. For example, if `listen` is `127.0.0.1:8787`, the HTTPS port will be `8788` unless overridden here.
-- **shared.dns.listen**: Local fake-ip DNS server address. Transparent fake-ip mode expects your system or application DNS to query this address.
-- **shared.dns.fake_ipv4_range**: IPv4 fake-ip pool used for transparent redirection. WinDivert only intercepts TCP connections whose destination falls inside this range.
-- **shared.dns.fake_ipv6_range**: IPv6 fake-ip pool used for transparent redirection. WinDivert also intercepts TCP connections whose destination falls inside this range.
-- **shared.dns.record_ttl_secs**: TTL used for generated fake A and AAAA records.
+- **backend.dns.listen**: Local fake-ip DNS server address. Transparent fake-ip mode expects your system or application DNS to query this address.
+- **backend.dns.fake_ipv4_range**: IPv4 fake-ip pool used for transparent redirection. WinDivert only intercepts TCP connections whose destination falls inside this range.
+- **backend.dns.fake_ipv6_range**: IPv6 fake-ip pool used for transparent redirection. WinDivert also intercepts TCP connections whose destination falls inside this range.
+- **backend.dns.record_ttl_secs**: TTL used for generated fake A and AAAA records.
+- **backend.windivert.layer**: WinDivert capture layer used in transparent mode. Use `network` for local traffic and `network-forward` for forwarded traffic such as WSL, VMs, or gateway scenarios.
 - **includes:** List of URL redirection rules (see Rule Matching Modes below)
 
 ### Rule Matching Modes
@@ -134,22 +140,80 @@ If the `kind` field is omitted, it defaults to `prefix` for URLs ending with `/`
 
 ## Architecture
 
-### L3 Proxy Implementation
+### Transparent Pipeline
 
-The transparent proxy intercepts packets at the IP layer using WinDivert:
+```text
+                      +----------------------+
+                      |      AppConfig       |
+                      | rules / dns / ports  |
+                      +----------+-----------+
+                                 |
+                                 v
++-----------------------------------------------------------+
+|                    Transparent Runtime                    |
+|             proxy::runtime::serve_transparent             |
++----------------------+----------------+-------------------+
+                       |                |
+                       |                |
+                       v                v
+             +---------+----+    +------+------------------+
+             | FakeDnsServer |    |   Intercept Backend    |
+             | shared/dns    |    |   current: WinDivert   |
+             +---------+----+    +------+------------------+
+                       |                |
+                       |                |
+                       |                v
+                       |      +---------+------------------+
+                       |      |  DNS UDP responder         |
+                       |      |  DNS TCP redirect          |
+                       |      |  Fake-IP TCP redirect      |
+                       |      |  QUIC drop policy          |
+                       |      |  Proxy response rewrite    |
+                       |      +---------+------------------+
+                       |                |
+                       |                v
+                       |      +---------+------------------+
+                       |      |        Shared NAT          |
+                       |      |     traffic/shared/nat     |
+                       |      +---------+------------------+
+                       |                |
+                       +----------------+
+                                        |
+                                        v
+                        +---------------+---------------+
+                        |     Local Transparent Proxy   |
+                        | HTTP :8787 / TLS :8788        |
+                        +---------------+---------------+
+                                        |
+                                        v
+                             +----------+----------+
+                             |    Rule Resolution  |
+                             |  mirror or direct   |
+                             +----------+----------+
+                                        |
+                      +-----------------+-----------------+
+                      |                                   |
+                      v                                   v
+               +------+-------+                    +------+------+
+               | Mirror Upstream|                  | Original Up |
+               +----------------+                  +-------------+
+```
 
-- **Outbound redirection:** When your application makes a request to blocked.example.com on port 443, WinDivert captures the packet before it leaves the host. The proxy modifies the destination IP to 127.0.0.1 and port to 8788, then injects it back into the network stack. The local proxy service receives the connection on that port.
+### Responsibilities
 
-- **Inbound response handling:** When the proxy responds, WinDivert recognizes it as a response from the proxy service and reverses the NAT translation, restoring the original destination information before the packet goes to the client application.
+- **FakeDnsServer:** Owns fake-ip allocation and DNS answering for configured origin hosts.
+- **Intercept Backend:** Owns packet interception. The current backend is WinDivert, but this layer is intended to be replaceable by future TUN/TAP backends.
+- **Shared NAT:** Stores `(client_ip, client_port) -> (original_destination_ip, original_destination_port)` mappings so the backend can restore response packets.
+- **Local Transparent Proxy:** Reconstructs the original request target from HTTP Host or HTTPS SNI and executes either mirror forwarding or direct passthrough.
 
-- **Connection isolation:** A NAT translation table maintains mappings between (client_ip, client_port) and (original_destination_ip, original_destination_port) to ensure responses are correctly routed.
+### Request Flow
 
-### Host Resolution
-
-- **HTTP requests:** The proxy extracts the Host header to determine the original destination.
-- **HTTPS requests:** The proxy extracts SNI (Server Name Indication) from the TLS ClientHello handshake packet before the encrypted connection is established.
-
-Both extraction methods work at the packet level without requiring TLS decryption at the initial interception stage.
+1. The application resolves a configured host.
+2. `FakeDnsServer` returns a fake IPv4 or IPv6 address from the configured fake-ip pools.
+3. The intercept backend captures TCP traffic to that fake IP and redirects it to the local proxy listeners.
+4. The proxy reconstructs the original URL and evaluates mirror rules.
+5. Matched requests go to the configured mirror; unmatched requests go directly to the original upstream.
+6. Shared NAT lets the intercept backend rewrite outbound proxy responses back to the original destination tuple.
 
 ## Technical Details
 
@@ -159,7 +223,7 @@ Both extraction methods work at the packet level without requiring TLS decryptio
 - **Full HTTP Capabilities:**
   Seamless streaming of all HTTP methods (GET, POST, PUT, DELETE, etc.) including high-performance bidirectional request and response body forwarding powered by Hyper.
 
-- **WinDivert modes:**
+- **WinDivert modes (current intercept backend):**
   - `Network`: Captures traffic originating from or destined to the local host
   - `NetworkForward`: Captures traffic being forwarded through the host (enables gateway functionality for WSL, virtual machines, USB tethering, etc.)
 

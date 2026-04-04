@@ -6,14 +6,11 @@ use std::{
 
 use anyhow::{bail, ensure, Context, Result};
 use ipnet::{Ipv4Net, Ipv6Net};
-
-#[cfg(target_os = "windows")]
 use windivert::prelude::{WinDivertFlags, WinDivertParam};
 
 use crate::traffic::shared::dns::FakeDnsServer;
 use crate::traffic::shared::nat::{
-    new_transparent_nat_table_v4, new_transparent_nat_table_v6, TransparentNatTableV4,
-    TransparentNatTableV6,
+    new_transparent_nat_table, TransparentNatTableV4, TransparentNatTableV6,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,12 +79,9 @@ pub struct WinDivertRuntime {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub enum RuntimeBackend {
-    #[cfg(target_os = "windows")]
     Windows(WindowsBackendPlan),
-    UnsupportedPlatform,
 }
 
-#[cfg(target_os = "windows")]
 #[derive(Debug, Clone)]
 pub struct WindowsBackendPlan {
     pub filter: String,
@@ -134,8 +128,8 @@ impl Default for WinDivertConfig {
             local_dns_port,
             capture_kind: TransparentCaptureKind::Generic,
             fake_dns_server: None,
-            transparent_nat_table_v4: new_transparent_nat_table_v4(),
-            transparent_nat_table_v6: new_transparent_nat_table_v6(),
+            transparent_nat_table_v4: new_transparent_nat_table(),
+            transparent_nat_table_v6: new_transparent_nat_table(),
         }
     }
 }
@@ -144,7 +138,7 @@ impl WinDivertRuntime {
     pub fn new(config: WinDivertConfig) -> Result<Self> {
         validate_config(&config)?;
         let assets = discover_assets()?;
-        let backend = RuntimeBackend::from_config(&config);
+        let backend = RuntimeBackend::Windows(WindowsBackendPlan::from_config(&config));
 
         Ok(Self {
             config,
@@ -155,10 +149,6 @@ impl WinDivertRuntime {
 
     pub fn plan_summary(&self) -> String {
         match &self.backend {
-            RuntimeBackend::UnsupportedPlatform => {
-                "windivert backend unavailable on this platform".to_string()
-            }
-            #[cfg(target_os = "windows")]
             RuntimeBackend::Windows(plan) => format!(
                 "layer={:?}, priority={}, filter=\"{}\", queue_len={}, queue_time_ms={}, queue_size={}, sniff={}",
                 plan.layer,
@@ -243,28 +233,17 @@ fn require_first_existing(root: &Path, file_names: &[&str]) -> Result<PathBuf> {
     )
 }
 
-impl RuntimeBackend {
-    pub fn from_config(config: &WinDivertConfig) -> Self {
-        #[cfg(target_os = "windows")]
-        {
-            return Self::Windows(WindowsBackendPlan::from_config(config));
-        }
-
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = config;
-            Self::UnsupportedPlatform
-        }
-    }
-}
-
-#[cfg(target_os = "windows")]
 impl WindowsBackendPlan {
     pub fn from_config(config: &WinDivertConfig) -> Self {
+        let mut flags = WinDivertFlags::new();
+        if config.sniff {
+            flags = flags.set_sniff();
+        }
+
         Self {
             filter: config.filter.clone(),
             priority: config.priority,
-            flags: build_flags(config),
+            flags,
             queue_len: config.queue_len,
             queue_time_ms: config.queue_time_ms,
             queue_size: config.queue_size,
@@ -279,13 +258,4 @@ impl WindowsBackendPlan {
             (WinDivertParam::QueueSize, self.queue_size),
         ]
     }
-}
-
-#[cfg(target_os = "windows")]
-fn build_flags(config: &WinDivertConfig) -> WinDivertFlags {
-    let mut flags = WinDivertFlags::new();
-    if config.sniff {
-        flags = flags.set_sniff();
-    }
-    flags
 }
