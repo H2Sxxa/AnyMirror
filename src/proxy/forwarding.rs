@@ -8,10 +8,10 @@ use url::Url;
 use super::{
     executor::UpstreamExecutor,
     proxy_response::{build_passthrough_response, build_proxy_response},
-    responses::json_error,
+    responses::{json_error, reject_response},
     state::AppState,
 };
-use crate::rules::UpstreamPlan;
+use crate::rules::types::{RuleActionKind, UpstreamPlan};
 
 pub(crate) async fn forward_request<E: UpstreamExecutor>(
     state: &AppState<E>,
@@ -26,32 +26,46 @@ pub(crate) async fn forward_request<E: UpstreamExecutor>(
         None => return json_error(StatusCode::NOT_FOUND, "no matching mirror rule"),
     };
 
-    tracing::info!(
-        "Forwarding {} to upstream mirror: {}",
-        original,
-        matched.upstream.url
-    );
+    let message = match matched.action_kind() {
+        RuleActionKind::Mirror => "Forwarding request to upstream mirror",
+        RuleActionKind::Direct => "Forwarding request directly due to matching direct rule",
+        RuleActionKind::Reject => "Rejecting request due to matching reject rule",
+    };
+    if let Some(reject) = matched.reject() {
+        tracing::info!(
+            original_url = %original,
+            reject_status = reject.status,
+            reject_message = %reject.message,
+            "{message}"
+        );
+        return reject_response(reject.status, &reject.message);
+    }
+
+    let upstream = matched
+        .upstream()
+        .expect("mirror/direct actions must resolve to an upstream");
+    tracing::info!(original_url = %original, upstream_url = %upstream.url, "{message}");
     let executed = match state
         .executor
-        .execute(
-            method,
-            inbound_headers,
-            original.as_str(),
-            &matched.upstream,
-            body,
-        )
+        .execute(method, inbound_headers, original.as_str(), upstream, body)
         .await
     {
         Ok(executed) => executed,
         Err(error) => {
             return json_error(
                 StatusCode::BAD_GATEWAY,
-                format!("upstream request failed: {error}"),
+                format!("request forwarding failed: {error}"),
             );
         }
     };
 
-    build_proxy_response(executed.response, matched, source)
+    match matched.action_kind() {
+        RuleActionKind::Mirror => build_proxy_response(executed.response, matched, source),
+        RuleActionKind::Direct => {
+            build_passthrough_response(executed.response, source, original.as_str())
+        }
+        RuleActionKind::Reject => unreachable!("reject returns before upstream execution"),
+    }
 }
 
 pub(crate) async fn forward_transparent_request<E: UpstreamExecutor>(
@@ -64,35 +78,57 @@ pub(crate) async fn forward_transparent_request<E: UpstreamExecutor>(
     let matched = state.rules.resolve(&original);
     match matched {
         Some(matched) => {
-            tracing::info!(
-                original_url = %original,
-                upstream_url = %matched.upstream.url,
-                "Forwarding transparent request to upstream mirror"
-            );
+            let message = match matched.action_kind() {
+                RuleActionKind::Mirror => "Forwarding transparent request to upstream mirror",
+                RuleActionKind::Direct => {
+                    "Forwarding transparent request directly due to matching direct rule"
+                }
+                RuleActionKind::Reject => {
+                    "Rejecting transparent request due to matching reject rule"
+                }
+            };
+            if let Some(reject) = matched.reject() {
+                tracing::info!(
+                    original_url = %original,
+                    reject_status = reject.status,
+                    reject_message = %reject.message,
+                    "{message}"
+                );
+                return reject_response(reject.status, &reject.message);
+            }
+
+            let upstream = matched
+                .upstream()
+                .expect("mirror/direct actions must resolve to an upstream");
+            tracing::info!(original_url = %original, upstream_url = %upstream.url, "{message}");
             let executed = match state
                 .executor
-                .execute(
-                    method,
-                    inbound_headers,
-                    original.as_str(),
-                    &matched.upstream,
-                    body,
-                )
+                .execute(method, inbound_headers, original.as_str(), upstream, body)
                 .await
             {
                 Ok(executed) => executed,
                 Err(error) => {
                     return json_error(
                         StatusCode::BAD_GATEWAY,
-                        format!("upstream request failed: {error}"),
+                        format!("request forwarding failed: {error}"),
                     );
                 }
             };
 
-            build_proxy_response(executed.response, matched, Some("transparent"))
+            match matched.action_kind() {
+                RuleActionKind::Mirror => {
+                    build_proxy_response(executed.response, matched, Some("transparent"))
+                }
+                RuleActionKind::Direct => build_passthrough_response(
+                    executed.response,
+                    Some("transparent-direct"),
+                    original.as_str(),
+                ),
+                RuleActionKind::Reject => unreachable!("reject returns before upstream execution"),
+            }
         }
         None => {
-            let upstream = direct_upstream_plan(&original);
+            let upstream = UpstreamPlan::direct(&original);
             tracing::info!(
                 original_url = %original,
                 "Transparent request does not match a mirror rule; forwarding directly"
@@ -117,16 +153,5 @@ pub(crate) async fn forward_transparent_request<E: UpstreamExecutor>(
                 original.as_str(),
             )
         }
-    }
-}
-
-fn direct_upstream_plan(original: &Url) -> UpstreamPlan {
-    UpstreamPlan {
-        url: original.clone(),
-        sni: None,
-        host: None,
-        connect_host: None,
-        connect_ip: None,
-        dns: None,
     }
 }

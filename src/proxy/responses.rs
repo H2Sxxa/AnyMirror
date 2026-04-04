@@ -6,7 +6,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tokio::signal;
 
-use crate::rules::{RuleKind, RuleMatch};
+use crate::rules::types::{RuleActionKind, RuleKind, RuleMatch};
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct RewriteQuery {
@@ -16,7 +16,8 @@ pub(crate) struct RewriteQuery {
 #[derive(Debug, Serialize)]
 pub(crate) struct RewriteResponse {
     pub(crate) original: String,
-    pub(crate) rewritten: String,
+    pub(crate) rewritten: Option<String>,
+    pub(crate) action: &'static str,
     pub(crate) kind: &'static str,
 }
 
@@ -39,7 +40,23 @@ pub(crate) fn rule_kind_name(matched: RuleMatch<'_>) -> &'static str {
     match matched.rule.kind {
         RuleKind::Exact => "exact",
         RuleKind::Prefix => "prefix",
+        RuleKind::Host => "host",
+        RuleKind::Hosts => "hosts",
+        RuleKind::HostSuffix => "host-suffix",
     }
+}
+
+pub(crate) fn rule_action_name(matched: RuleMatch<'_>) -> &'static str {
+    match matched.action_kind() {
+        RuleActionKind::Mirror => "mirror",
+        RuleActionKind::Direct => "direct",
+        RuleActionKind::Reject => "reject",
+    }
+}
+
+pub(crate) fn reject_response(status: u16, message: &str) -> Response {
+    let status = StatusCode::from_u16(status).expect("validated reject status");
+    json_error(status, message)
 }
 
 pub(crate) async fn shutdown_signal() {

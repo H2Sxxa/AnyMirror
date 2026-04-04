@@ -38,7 +38,8 @@ async fn main() -> Result<()> {
         .init();
     let _ = rustls::crypto::ring::default_provider().install_default();
     let cli = Cli::parse();
-    let config = config::load_config(&cli.config)?;
+    let config_path = config::resolve_config_path(&cli.config)?;
+    let config = config::load_config(&config_path)?;
 
     let banner = cfonts::render(cfonts::Options {
         text: String::from("anymirror"),
@@ -55,7 +56,7 @@ async fn main() -> Result<()> {
         config.rules.len(),
         cli.mode
     );
-    tracing::info!("config loaded from {}", cli.config.display());
+    tracing::info!("config loaded from {}", config_path.display());
 
     match cli.mode {
         ServerMode::Explicit => proxy::serve_explicit(config).await,

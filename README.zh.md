@@ -22,9 +22,14 @@ AnyMirror 现在采用基于 fake-ip 的透明代理链路：
 
 ## 系统要求
 
-- Windows 10 或更高版本（基于 WinDivert 实现）
-- 管理员权限（需要加载 WinDivert 驱动程序并捕获网络流量）
 - Rust 工具链 1.70 或以上
+- 显式代理模式：
+  - 不依赖 WinDivert
+  - 作为普通本地 HTTP/HTTPS 代理运行
+- 透明代理模式：
+  - Windows 10 或更高版本
+  - 管理员权限
+  - 可执行文件同目录下提供 WinDivert 驱动文件
 
 ## 安装与配置
 
@@ -73,6 +78,25 @@ anymirror --mode transparent --config config.yml
 anymirror --mode transparent --config config.yml
 ```
 
+`--config` 也支持简单 alias。例如 `--config mcdev` 会依次尝试当前目录下的
+`config.mcdev.yaml`、`config.mcdev.yml`、`mcdev.yaml`、`mcdev.yml`。
+
+### 模式支持范围
+
+当前运行时支持下面这些组合：
+
+| CLI 模式 | 后端 | 平台 | 说明 |
+| --- | --- | --- | --- |
+| `explicit` | 不需要拦截后端 | 跨平台 | 作为标准本地 HTTP/HTTPS 代理运行 |
+| `transparent` | `backend.windivert` | 仅 Windows | 使用 fake-ip DNS 加 WinDivert 拦截 |
+
+透明模式当前只支持 WinDivert 拦截后端。透明模式内部还有两种 WinDivert layer：
+
+- `backend.windivert.layer: network`：拦截本机发起的流量
+- `backend.windivert.layer: network-forward`：拦截转发流量，适用于 WSL、虚拟机或局域网网关场景
+
+在非 Windows 平台上，透明模式不可用，程序会直接返回明确错误。
+
 ## 配置文件
 
 创建 `config.yml` 文件并编写重定向规则：
@@ -90,33 +114,39 @@ backend:
     layer: network              # network 或 network-forward
 
 includes:
-  # 前缀匹配（以 / 结尾的 URL 默认方式）
-  - origin: https://libraries.minecraft.net/
-    upstream:
-      url: https://bmclapi2.bangbang93.com/maven
+  - match:
+      prefix: https://libraries.minecraft.net/
+    action:
+      type: mirror
+      upstream:
+        url: https://bmclapi2.bangbang93.com/maven/
 
-  # 前缀匹配（显式指定）
-  - kind: prefix
-    origin: https://resources.download.minecraft.net/
-    upstream:
-      url: https://bmclapi2.bangbang93.com/assets/
+  - match:
+      host: resources.download.minecraft.net
+    action:
+      type: mirror
+      upstream:
+        url: https://bmclapi2.bangbang93.com/assets/
 
-  # 精确匹配（不以 / 结尾的 URL 默认方式）
-  - kind: exact
-    origin: https://maven.minecraftforge.net
-    upstream:
-      url: https://bmclapi2.bangbang93.com/maven
-  # 高级 Upstream 重写配置 (SNI, Custom DNS, IP mapping)
-  - kind: exact
-    origin: https://example.com/api
-    upstream:
-      url: https://api.backend.local
-      connect_ip: 10.0.0.5     # 强制将流量发送到指定的 IP
-      connect_host: api.internal.local # 覆盖 DNS 解析的目标域名
-      sni: backend.local       # 覆盖 TLS 握手时的 SNI 域名
-      dns:
-        mode: doh              # DNS 解析模式: system, udp, 或 doh
-        server: https://dns.google/dns-query # DoH 服务器（如果 mode 是 udp，则填标准 DNS IP）
+  - match:
+      exact: https://maven.minecraftforge.net
+    action:
+      type: mirror
+      upstream:
+        url: https://bmclapi2.bangbang93.com/maven
+
+  - match:
+      exact: https://example.com/api
+    action:
+      type: mirror
+      upstream:
+        url: https://api.backend.local
+        connect_ip: 10.0.0.5
+        connect_host: api.internal.local
+        sni: backend.local
+        dns:
+          mode: doh
+          server: https://dns.google/dns-query
 ```
 
 ### 配置字段说明
@@ -128,14 +158,84 @@ includes:
 - **backend.dns.fake_ipv6_range**：透明重定向使用的 IPv6 fake-ip 地址池。WinDivert 也会拦截目标地址落在这个网段内的 TCP 连接。
 - **backend.dns.record_ttl_secs**：生成 fake A 和 AAAA 记录时使用的 TTL。
 - **backend.windivert.layer**：透明模式下 WinDivert 使用的捕获层。`network` 用于本机流量，`network-forward` 用于 WSL、虚拟机或网关场景下的转发流量。
-- **includes：** URL 重定向规则列表（见下方规则匹配模式）
+- **includes：** 结构化 `match + action` 规则列表（见下方规则匹配模式）
+
+### DNS Resolver 模式
+
+AnyMirror 里有两层不同的 DNS 配置：
+
+- `backend.dns.*`：配置透明模式使用的本地 fake-ip DNS 服务。这一层不是“上游解析器模式”的开关。
+- `upstream.dns.*`：配置某一条镜像规则在连接 upstream 时应当如何解析 upstream host。
+
+当前支持的 `upstream.dns.mode`：
+
+- `system`：使用操作系统当前的 DNS 配置
+- `udp`：使用指定的明文 UDP DNS 服务器，此时必须提供 `upstream.dns.server`
+- `dot`：使用指定的 DNS-over-TLS 服务器，此时必须提供 `upstream.dns.server`
+- `doh`：使用指定的 DNS-over-HTTPS 服务器，此时必须提供 `upstream.dns.server`
+
+- `upstream.dns.server` 示例：
+  - `udp`：`1.1.1.1` 或 `1.1.1.1:53`
+  - `dot`：`dns.google`、`dns.google:853` 或 `tls://dns.google:853`
+  - `doh`：完整 URL，如 `https://dns.google/dns-query`，或者仅填写 host，程序会扩展成 `https://<host>/dns-query`
+
+当前仍不支持：
+
+- 透明模式下对客户端 DoH / DoT 的加密 DNS 拦截
 
 ### 规则匹配模式
 
-- **prefix：** 匹配任何路径以 "origin" 路径开头的请求。适用于重定向整个目录树。查询字符串会被保留。
-- **exact：** 仅匹配完全相同的 URL（方案、域名、端口、路径和查询必须全部匹配）。对于不以 `/` 结尾的 URL，这是默认模式。
+规则引擎现在只使用结构化的 `match + action` 规则：
 
-如果省略 `kind` 字段，系统会自动判断：以 `/` 结尾的 URL 默认使用 `prefix` 模式，其他 URL 默认使用 `exact` 模式。代理透明地处理 HTTP 和 HTTPS 流量，提取原始主机名并改写请求。
+```yaml
+includes:
+  - match:
+      host: meta.fabricmc.net
+    action:
+      type: mirror
+      upstream:
+        url: https://bmclapi2.bangbang93.com/fabric-meta/
+
+  - match:
+      host_suffix: neoforged.net
+      path_prefix: /releases/
+    action:
+      type: mirror
+      upstream:
+        url: https://mirror.example.com/neoforge/
+
+  - match:
+      hosts:
+        - api.example.com
+        - download.example.com
+      scheme: https
+    action:
+      type: direct
+
+  - match:
+      host_suffix: telemetry.example.com
+    action:
+      type: reject
+      status: 451
+      message: blocked by policy
+```
+
+结构化匹配字段：
+
+- `match.exact`：匹配一个精确 URL
+- `match.prefix`：匹配一个 URL 前缀
+- `match.host`：匹配一个域名
+- `match.hosts`：匹配一个域名列表中的任意项
+- `match.host_suffix`：匹配域名后缀，例如 `example.com`
+- `match.scheme`：对 host 类规则附加 `http` 或 `https` 限制
+- `match.port`：对 host 类规则附加端口限制
+- `match.path_prefix`：对 host 类规则附加路径前缀限制
+
+结构化动作：
+
+- `action.type: mirror`：改写并转发到配置的 upstream
+- `action.type: direct`：保留原始目标并直接转发
+- `action.type: reject`：本地直接返回拒绝响应，不再访问 upstream
 
 ## 架构设计
 
@@ -234,14 +334,19 @@ includes:
 
 ## 开发计划
 
-- [x] 基于 WinDivert 的 L3 数据包拦截（IPv4 及 IPv6，包含 Network 和 NetworkForward 层）
-- [x] HTTPS 请求的 SNI 提取
-- [x] HTTP 请求的 Host 头提取
-- [x] 高性能的 Hyper 引擎重构（支持全 HTTP 方法与上下行 Request Body 透传）
-- [x] 基于 Tokio 和原生 Rustls 的完全异步 Socket 网络栈
-- [x] 可扩展的高级 Upstream 配置 (`connect_ip`、`connect_host`、`sni` 以及 `DoH` 自定义 DNS)
-- [x] 基于 clap 的命令行界面
+- [x] 基于 WinDivert 的拦截后端（`Network` 和 `NetworkForward`）用于 Windows 透明流量捕获
+- [x] 支持 IPv4 与 IPv6 的 Fake-IP DNS 主链
+- [x] DNS UDP 就地响应与 DNS-over-TCP 重定向到本地 fake DNS 服务
+- [x] 共享 NAT，用于透明请求重定向与代理响应还原
+- [x] 基于 Rustls 动态证书的透明 HTTP / HTTPS 拦截
+- [x] 基于 Hyper 的高性能 upstream 执行与完整请求体转发
+- [x] 结构化规则引擎，支持 `exact`、`prefix`、`host`、`hosts`、`host_suffix`
+- [x] 结构化规则动作，支持 `mirror`、`direct`、`reject`
+- [x] 可扩展的 upstream 配置（`connect_ip`、`connect_host`、`sni` 与自定义 upstream DNS）
+- [x] CLI 启动参数支持配置 alias fallback（如 `--config mcdev` 自动解析到 `config.mcdev.yml`）
 - [ ] 配置文件监视和热重载（配置文件变化时自动重新加载）
 - [ ] TUN/TAP 设备支持，用于跨平台部署（macOS、Linux），集成用户态 TCP/IP 协议栈
-- [ ] 高级规则匹配（正则表达式、通配符、HTTP 版本/方法筛选）
+- [ ] DoH / DoT 等加密 DNS 的拦截支持
+- [ ] 高级规则匹配（正则表达式、通配主机模式、HTTP 版本/方法筛选）
+- [ ] 内置规则预设与规则集组合
 - [ ] 流量监控和统计

@@ -8,7 +8,7 @@ use axum::{
 use super::super::{
     executor::UpstreamExecutor,
     request_parser::parse_request_url,
-    responses::{json_error, rule_kind_name, RewriteQuery, RewriteResponse},
+    responses::{json_error, rule_action_name, rule_kind_name, RewriteQuery, RewriteResponse},
     state::AppState,
 };
 
@@ -24,7 +24,8 @@ pub(crate) async fn rewrite_url<E: UpstreamExecutor>(
     match state.rules.resolve(&original) {
         Some(matched) => Json(RewriteResponse {
             original: original.to_string(),
-            rewritten: matched.upstream.url.to_string(),
+            rewritten: matched.upstream().map(|upstream| upstream.url.to_string()),
+            action: rule_action_name(matched.clone()),
             kind: rule_kind_name(matched),
         })
         .into_response(),

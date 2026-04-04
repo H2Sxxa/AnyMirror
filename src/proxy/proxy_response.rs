@@ -1,6 +1,6 @@
 use axum::{body::Body, http::HeaderName, response::Response};
 
-use crate::rules::RuleMatch;
+use crate::rules::types::RuleMatch;
 
 use super::{headers::is_forwardable_header, responses::rule_kind_name};
 
@@ -9,7 +9,11 @@ pub(super) fn build_proxy_response(
     matched: RuleMatch<'_>,
     source: Option<&str>,
 ) -> Response {
-    let target = matched.upstream.url.to_string();
+    let target = matched
+        .upstream()
+        .expect("mirror responses must have an upstream")
+        .url
+        .to_string();
     let rule_kind = rule_kind_name(matched);
     build_upstream_response(upstream, source, Some(&target), Some(rule_kind))
 }

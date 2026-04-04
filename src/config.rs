@@ -1,10 +1,15 @@
-use std::{fs, net::SocketAddr, path::Path, time::Duration};
+use std::{
+    fs,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use anyhow::{bail, Context, Result};
 use ipnet::{Ipv4Net, Ipv6Net};
 use serde::Deserialize;
 
-use crate::rules::Rules;
+use crate::rules::types::{RawRule, Rules};
 use crate::traffic::windivert::WinDivertLayer;
 
 #[derive(Debug, Clone)]
@@ -42,7 +47,7 @@ struct RawConfig {
     #[serde(default)]
     backend: RawBackendOptions,
     #[serde(default, alias = "rules")]
-    includes: Vec<crate::rules::RawRule>,
+    includes: Vec<RawRule>,
     #[allow(dead_code)]
     #[serde(default)]
     classes: Vec<String>,
@@ -118,8 +123,56 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<AppConfig> {
     })
 }
 
+pub fn resolve_config_path(path: impl AsRef<Path>) -> Result<PathBuf> {
+    let input_path = path.as_ref();
+    if input_path.is_file() {
+        return Ok(input_path.to_path_buf());
+    }
+
+    let Some(alias) = extract_config_alias(input_path) else {
+        return Ok(input_path.to_path_buf());
+    };
+
+    let candidates = [
+        format!("config.{alias}.yaml"),
+        format!("config.{alias}.yml"),
+        format!("{alias}.yaml"),
+        format!("{alias}.yml"),
+    ];
+
+    for candidate in &candidates {
+        let candidate_path = PathBuf::from(candidate);
+        if candidate_path.is_file() {
+            return Ok(candidate_path);
+        }
+    }
+
+    bail!(
+        "failed to resolve config alias `{}`; tried {}",
+        alias,
+        candidates.join(", ")
+    )
+}
+
 fn default_listen_addr() -> String {
     "127.0.0.1:8787".to_string()
+}
+
+fn extract_config_alias(path: &Path) -> Option<&str> {
+    if path.components().count() != 1 {
+        return None;
+    }
+
+    let file_name = path.file_name()?.to_str()?;
+    if file_name.eq_ignore_ascii_case("config.yml") || file_name.eq_ignore_ascii_case("config.yaml")
+    {
+        return None;
+    }
+    if file_name.contains('.') {
+        return None;
+    }
+
+    Some(file_name)
 }
 
 impl TryFrom<RawBackendOptions> for BackendOptions {

@@ -1,7 +1,6 @@
 mod fake_ip;
 
 use std::{
-    collections::HashSet,
     net::{IpAddr, Ipv6Addr, SocketAddr},
     sync::Arc,
     time::{Duration, Instant},
@@ -27,7 +26,7 @@ use tokio::{
 };
 
 use crate::config::FakeDnsOptions;
-use crate::rules::Rules;
+use crate::rules::types::Rules;
 
 pub use fake_ip::FakeIpStore;
 
@@ -41,7 +40,7 @@ pub struct FakeDnsServer {
 #[derive(Debug)]
 struct FakeDnsState {
     fake_ip_store: FakeIpStore,
-    origin_hosts: HashSet<String>,
+    rules: Rules,
     options: FakeDnsOptions,
     resolver: TokioResolver,
 }
@@ -153,11 +152,7 @@ impl FakeDnsState {
 
         Ok(Self {
             fake_ip_store: FakeIpStore::new(options.fake_ipv4_range, options.fake_ipv6_range),
-            origin_hosts: rules
-                .origin_hosts()
-                .into_iter()
-                .map(|host| host.to_ascii_lowercase())
-                .collect(),
+            rules: rules.clone(),
             options,
             resolver,
         })
@@ -194,7 +189,7 @@ impl FakeDnsState {
 
         for query in queries {
             match query.record_type {
-                RecordType::A if self.origin_hosts.contains(&query.name) => {
+                RecordType::A if self.rules.matches_dns_host(&query.name) => {
                     let fake_ip = self.fake_ip_store.allocate_or_refresh_ipv4(
                         &query.name,
                         ttl,
@@ -203,7 +198,7 @@ impl FakeDnsState {
                     answers.push(query.build_record(ttl, RData::A(A(fake_ip)))?);
                     matched = true;
                 }
-                RecordType::AAAA if self.origin_hosts.contains(&query.name) => {
+                RecordType::AAAA if self.rules.matches_dns_host(&query.name) => {
                     let fake_ip = self.fake_ip_store.allocate_or_refresh_ipv6(
                         &query.name,
                         ttl,

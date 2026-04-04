@@ -22,9 +22,14 @@ This approach stays transparent to applications while avoiding the classic "same
 
 ## Requirements
 
-- Windows 10 or later (WinDivert-based implementation)
-- Administrator privileges (required to load WinDivert driver and capture network traffic)
 - Rust toolchain 1.70+
+- Explicit mode:
+  - No WinDivert dependency
+  - Works as a normal local HTTP/HTTPS proxy
+- Transparent mode:
+  - Windows 10 or later
+  - Administrator privileges
+  - WinDivert driver files available beside the executable
 
 ## Installation & Setup
 
@@ -73,6 +78,25 @@ anymirror --mode transparent --config config.yml
 anymirror --mode transparent --config config.yml
 ```
 
+`--config` also supports simple aliases. For example, `--config mcdev` will try
+`config.mcdev.yaml`, `config.mcdev.yml`, `mcdev.yaml`, and `mcdev.yml` in the current directory.
+
+### Mode Support
+
+The current runtime supports these combinations:
+
+| CLI mode | Backend | Platform | Notes |
+| --- | --- | --- | --- |
+| `explicit` | No intercept backend required | Cross-platform | Runs as a standard local HTTP/HTTPS proxy |
+| `transparent` | `backend.windivert` | Windows only | Uses fake-ip DNS plus WinDivert interception |
+
+Transparent mode currently uses only the WinDivert intercept backend. Inside transparent mode:
+
+- `backend.windivert.layer: network`: intercept traffic originating from the local host
+- `backend.windivert.layer: network-forward`: intercept forwarded traffic for gateway-style setups such as WSL, VMs, or LAN clients
+
+On non-Windows platforms, transparent mode is not available and the process will fail fast with an explicit error.
+
 ## Configuration
 
 Create a `config.yml` file with your redirection rules:
@@ -90,34 +114,39 @@ backend:
     layer: network              # network or network-forward
 
 includes:
-  # Prefix matching (default for URLs ending with /)
-  - origin: https://libraries.minecraft.net/
-    upstream: 
-      url: https://bmclapi2.bangbang93.com/maven
-    
-  # Prefix matching (explicit)
-  - kind: prefix
-    origin: https://resources.download.minecraft.net/
-    upstream:
-      url: https://bmclapi2.bangbang93.com/assets/
-    
-  # Exact matching (default for specific URLs)
-  - kind: exact
-    origin: https://maven.minecraftforge.net
-    upstream:
-      url: https://bmclapi2.bangbang93.com/maven
+  - match:
+      prefix: https://libraries.minecraft.net/
+    action:
+      type: mirror
+      upstream:
+        url: https://bmclapi2.bangbang93.com/maven/
 
-  # Advanced upstream overrides (SNI, Custom DNS, IP mapping)
-  - kind: exact
-    origin: https://example.com/api
-    upstream:
-      url: https://api.backend.local
-      connect_ip: 10.0.0.5     # Force connection to a specific IP
-      connect_host: api.internal.local # Force DNS resolution against a specific host
-      sni: backend.local       # Override TLS Sni server name
-      dns:
-        mode: doh              # DNS resolution mode: system, udp, or doh
-        server: https://dns.google/dns-query # DoH Server (or standard DNS IP for 'udp')
+  - match:
+      host: resources.download.minecraft.net
+    action:
+      type: mirror
+      upstream:
+        url: https://bmclapi2.bangbang93.com/assets/
+
+  - match:
+      exact: https://maven.minecraftforge.net
+    action:
+      type: mirror
+      upstream:
+        url: https://bmclapi2.bangbang93.com/maven
+
+  - match:
+      exact: https://example.com/api
+    action:
+      type: mirror
+      upstream:
+        url: https://api.backend.local
+        connect_ip: 10.0.0.5
+        connect_host: api.internal.local
+        sni: backend.local
+        dns:
+          mode: doh
+          server: https://dns.google/dns-query
 ```
 
 ### Configuration Fields
@@ -129,14 +158,84 @@ includes:
 - **backend.dns.fake_ipv6_range**: IPv6 fake-ip pool used for transparent redirection. WinDivert also intercepts TCP connections whose destination falls inside this range.
 - **backend.dns.record_ttl_secs**: TTL used for generated fake A and AAAA records.
 - **backend.windivert.layer**: WinDivert capture layer used in transparent mode. Use `network` for local traffic and `network-forward` for forwarded traffic such as WSL, VMs, or gateway scenarios.
-- **includes:** List of URL redirection rules (see Rule Matching Modes below)
+- **includes:** List of structured `match + action` rules (see Rule Matching Modes below)
+
+### DNS Resolver Modes
+
+There are two different DNS layers in AnyMirror:
+
+- `backend.dns.*`: Configures the local fake-ip DNS server used by transparent mode. This is not an upstream resolver mode selector.
+- `upstream.dns.*`: Configures how the proxy resolves the upstream host for one specific mirror rule.
+
+Supported `upstream.dns.mode` values:
+
+- `system`: Use the operating system DNS configuration
+- `udp`: Use a specific plain DNS server over UDP; `upstream.dns.server` is required
+- `dot`: Use a specific DNS-over-TLS server; `upstream.dns.server` is required
+- `doh`: Use a specific DNS-over-HTTPS server; `upstream.dns.server` is required
+
+- `upstream.dns.server` examples:
+  - `udp`: `1.1.1.1` or `1.1.1.1:53`
+  - `dot`: `dns.google`, `dns.google:853`, or `tls://dns.google:853`
+  - `doh`: full URL like `https://dns.google/dns-query`, or a host that will be expanded to `https://<host>/dns-query`
+
+Still not supported:
+
+- Encrypted DNS interception for client-side DoH/DoT in transparent mode
 
 ### Rule Matching Modes
 
-- **prefix:** Matches any request where the URL path starts with the "origin" path. Useful for redirecting entire directory trees. Query strings are preserved.
-- **exact:** Matches only requests with the exact URL (scheme, host, port, path, and query must all match). Default mode for URLs not ending with `/`.
+The rule engine only uses structured `match + action` rules:
 
-If the `kind` field is omitted, it defaults to `prefix` for URLs ending with `/` and `exact` otherwise. The proxy handles both HTTP and HTTPS traffic transparently, extracting the original hostname and rewriting requests accordingly.
+```yaml
+includes:
+  - match:
+      host: meta.fabricmc.net
+    action:
+      type: mirror
+      upstream:
+        url: https://bmclapi2.bangbang93.com/fabric-meta/
+
+  - match:
+      host_suffix: neoforged.net
+      path_prefix: /releases/
+    action:
+      type: mirror
+      upstream:
+        url: https://mirror.example.com/neoforge/
+
+  - match:
+      hosts:
+        - api.example.com
+        - download.example.com
+      scheme: https
+    action:
+      type: direct
+
+  - match:
+      host_suffix: telemetry.example.com
+    action:
+      type: reject
+      status: 451
+      message: blocked by policy
+```
+
+Structured matcher fields:
+
+- `match.exact`: Match one exact URL
+- `match.prefix`: Match one URL prefix
+- `match.host`: Match one host
+- `match.hosts`: Match any host in a list
+- `match.host_suffix`: Match a host suffix such as `example.com`
+- `match.scheme`: Optional `http` or `https` restriction for host-based rules
+- `match.port`: Optional port restriction for host-based rules
+- `match.path_prefix`: Optional path-prefix restriction for host-based rules
+
+Structured actions:
+
+- `action.type: mirror`: Rewrite and forward to the configured upstream
+- `action.type: direct`: Keep the original destination and forward directly
+- `action.type: reject`: Return a local reject response without contacting the upstream
 
 ## Architecture
 
@@ -235,14 +334,19 @@ If the `kind` field is omitted, it defaults to `prefix` for URLs ending with `/`
 
 ## Roadmap
 
-- [x] WinDivert-based L3 packet interception (Network and NetworkForward layers for IPv4 and IPv6)
-- [x] SNI extraction for HTTPS interception
-- [x] Host header extraction for HTTP interception
-- [x] High-performance Hyper-based execution engine with full Request Body & Methods support
-- [x] Async socket handling with Tokio and pure Rustls
-- [x] Extensible Upstream Configuration (`connect_ip`, `connect_host`, `sni`, and `DoH` custom DNS)
-- [x] Command-line interface with clap
+- [x] WinDivert intercept backend (`Network` and `NetworkForward`) for transparent Windows traffic capture
+- [x] Fake-IP DNS pipeline with IPv4 and IPv6 address pools
+- [x] DNS UDP response synthesis and DNS-over-TCP redirection to the local fake DNS server
+- [x] Shared NAT for transparent request redirection and proxy response restoration
+- [x] Transparent HTTP and HTTPS interception with dynamic Rustls certificates
+- [x] High-performance Hyper-based upstream execution with full request body forwarding
+- [x] Structured rule engine with `exact`, `prefix`, `host`, `hosts`, and `host_suffix` matchers
+- [x] Structured rule actions with `mirror`, `direct`, and `reject`
+- [x] Extensible upstream options (`connect_ip`, `connect_host`, `sni`, and custom upstream DNS)
+- [x] CLI startup flow with config alias fallback (`--config mcdev` -> `config.mcdev.yml` etc.)
 - [ ] Configuration file watch and hot reload (automatic reload on config changes)
 - [ ] TUN/TAP device support for cross-platform deployment (macOS, Linux) with user-space TCP/IP stack
-- [ ] Advanced rule matching (regex, wildcards, HTTP version/method filtering)
+- [ ] Encrypted DNS interception for DoH/DoT
+- [ ] Advanced rule matching (regex, wildcard host patterns, HTTP version/method filtering)
+- [ ] Built-in rule presets/import composition
 - [ ] Traffic monitoring and statistics

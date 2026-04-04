@@ -11,7 +11,7 @@ use tokio::spawn;
 use tokio_rustls::rustls;
 use tokio_rustls::TlsConnector;
 
-use crate::rules::UpstreamPlan;
+use crate::rules::types::UpstreamPlan;
 
 use super::headers::is_forwardable_header;
 use super::resolver::CustomResolver;

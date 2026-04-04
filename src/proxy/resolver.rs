@@ -7,13 +7,14 @@ use hickory_resolver::name_server::TokioConnectionProvider;
 use hickory_resolver::TokioResolver;
 use url::Url;
 
-use crate::rules::{DnsMode, DnsPlan};
+use crate::rules::types::{DnsMode, DnsPlan};
 
 /// Custom DNS Resolver
 ///
 /// This module provides flexible DNS resolution capabilities, supporting:
 /// - System DNS
 /// - UDP DNS (Standard DNS over UDP)
+/// - DoT (DNS-over-TLS)
 /// - DoH (DNS-over-HTTPS)
 ///
 /// It provides unified DNS resolution support for the entire project,
@@ -42,6 +43,14 @@ impl CustomResolver {
                     .as_deref()
                     .ok_or_else(|| anyhow!("UDP DNS mode requires server address"))?,
             ),
+            DnsMode::Dot => {
+                Self::dot(
+                    plan.server
+                        .as_deref()
+                        .ok_or_else(|| anyhow!("DoT mode requires server address"))?,
+                )
+                .await
+            }
             DnsMode::Doh => {
                 Self::doh(
                     plan.server
@@ -67,6 +76,41 @@ impl CustomResolver {
 
         let group =
             NameServerConfigGroup::from_ips_clear(&[socket_addr.ip()], socket_addr.port(), true);
+        let config = ResolverConfig::from_parts(None, vec![], group);
+        let resolver =
+            TokioResolver::builder_with_config(config, TokioConnectionProvider::default())
+                .with_options(ResolverOpts::default())
+                .build();
+
+        Ok(Self { resolver })
+    }
+
+    /// Create a DoT (DNS-over-TLS) resolver
+    async fn dot(server: &str) -> Result<Self> {
+        let server_name = normalize_dot_server_name(server);
+        let bootstrap_host = dot_bootstrap_host(server)?;
+        let port = dot_server_port(server).unwrap_or(853);
+
+        let system_resolver = TokioResolver::builder_tokio()
+            .map_err(|error| {
+                anyhow!(
+                    "Failed to create system DNS resolver for DoT bootstrap: {}",
+                    error
+                )
+            })?
+            .build();
+
+        let lookup = system_resolver
+            .lookup_ip(bootstrap_host)
+            .await
+            .map_err(|error| anyhow!("Failed to resolve DoT server host {}: {}", bootstrap_host, error))?;
+
+        let ips = lookup.iter().collect::<Vec<IpAddr>>();
+        if ips.is_empty() {
+            return Err(anyhow!("No IPs found for DoT server {}", bootstrap_host));
+        }
+
+        let group = NameServerConfigGroup::from_ips_tls(&ips, port, server_name, true);
         let config = ResolverConfig::from_parts(None, vec![], group);
         let resolver =
             TokioResolver::builder_with_config(config, TokioConnectionProvider::default())
@@ -138,6 +182,32 @@ impl CustomResolver {
             .next()
             .ok_or_else(|| anyhow!("No DNS records found for {}", hostname))
     }
+}
+
+fn normalize_dot_server_name(server: &str) -> String {
+    server
+        .trim()
+        .trim_start_matches("tls://")
+        .trim_end_matches('/')
+        .split(':')
+        .next()
+        .unwrap_or(server)
+        .to_string()
+}
+
+fn dot_bootstrap_host(server: &str) -> Result<&str> {
+    let trimmed = server.trim().trim_start_matches("tls://").trim_end_matches('/');
+    let host = trimmed.split(':').next().unwrap_or(trimmed);
+    if host.is_empty() {
+        return Err(anyhow!("Invalid DoT server address {}", server));
+    }
+    Ok(host)
+}
+
+fn dot_server_port(server: &str) -> Option<u16> {
+    let trimmed = server.trim().trim_start_matches("tls://").trim_end_matches('/');
+    let (_, port) = trimmed.rsplit_once(':')?;
+    port.parse().ok()
 }
 
 #[cfg(test)]

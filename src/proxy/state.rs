@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use super::executor::UpstreamExecutor;
-use crate::rules::Rules;
+use crate::rules::types::Rules;
 
 #[derive(Clone)]
 pub(crate) struct AppState<E: UpstreamExecutor> {
