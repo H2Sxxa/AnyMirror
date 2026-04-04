@@ -1,14 +1,14 @@
 use axum::{
+    Json,
     extract::{Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
 
 use super::super::{
     executor::UpstreamExecutor,
     request_parser::parse_request_url,
-    responses::{json_error, rule_action_name, rule_kind_name, RewriteQuery, RewriteResponse},
+    responses::{RewriteQuery, RewriteResponse, json_error, rule_action_name, rule_kind_name},
     state::AppState,
 };
 

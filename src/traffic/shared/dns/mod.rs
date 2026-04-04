@@ -6,13 +6,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use hickory_proto::{
     op::{Header, LowerQuery, Message, MessageType, ResponseCode},
     rr::{
-        rdata::{A, AAAA},
         Name, RData, Record, RecordType,
+        rdata::{A, AAAA},
     },
 };
 use hickory_resolver::{ResolveError, TokioResolver};
@@ -21,6 +21,8 @@ use hickory_server::{
     server::{Request, RequestHandler, ResponseHandler, ResponseInfo, ServerFuture},
 };
 use tokio::net::UdpSocket;
+use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 
 use crate::config::FakeDnsOptions;
 use crate::rules::pool::LiveRules;
@@ -34,6 +36,11 @@ const DNS_TCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Debug, Clone)]
 pub struct FakeDnsServer {
     state: Arc<FakeDnsState>,
+}
+
+pub struct FakeDnsRuntimeHandle {
+    shutdown_tx: Option<oneshot::Sender<()>>,
+    join: JoinHandle<()>,
 }
 
 #[derive(Debug)]
@@ -62,15 +69,9 @@ struct DnsResolution {
 }
 
 impl FakeDnsServer {
-    pub async fn start(
-        options: FakeDnsOptions,
-        rules: LiveRules,
-        workers: Workers,
-    ) -> Result<Self> {
+    pub fn new(options: FakeDnsOptions, rules: LiveRules) -> Result<Self> {
         let state = Arc::new(FakeDnsState::new(options, rules)?);
-        let server = Self { state };
-        server.spawn(workers).await?;
-        Ok(server)
+        Ok(Self { state })
     }
 
     pub fn listen_addr(&self) -> SocketAddr {
@@ -98,7 +99,7 @@ impl FakeDnsServer {
         }
     }
 
-    async fn spawn(&self, workers: Workers) -> Result<()> {
+    pub async fn start_runtime(&self, workers: Workers) -> Result<FakeDnsRuntimeHandle> {
         let udp_socket = UdpSocket::bind(self.state.options.listen_addr)
             .await
             .with_context(|| {
@@ -126,7 +127,13 @@ impl FakeDnsServer {
         server.register_socket(udp_socket);
         server.register_listener(tcp_listener, DNS_TCP_REQUEST_TIMEOUT);
 
-        workers.spawn("fake-dns-server", async move {
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let shutdown_token = server.shutdown_token().clone();
+        let join = workers.spawn("fake-dns-server", async move {
+            tokio::spawn(async move {
+                let _ = shutdown_rx.await;
+                shutdown_token.cancel();
+            });
             if let Err(error) = server.block_until_done().await {
                 tracing::error!(?error, "Fake DNS server exited unexpectedly");
             }
@@ -141,7 +148,19 @@ impl FakeDnsServer {
             "Fake DNS server started"
         );
 
-        Ok(())
+        Ok(FakeDnsRuntimeHandle {
+            shutdown_tx: Some(shutdown_tx),
+            join,
+        })
+    }
+}
+
+impl FakeDnsRuntimeHandle {
+    pub async fn shutdown(mut self) {
+        if let Some(shutdown_tx) = self.shutdown_tx.take() {
+            let _ = shutdown_tx.send(());
+        }
+        let _ = self.join.await;
     }
 }
 
@@ -212,11 +231,7 @@ impl FakeDnsState {
             }
         }
 
-        if matched {
-            Ok(Some(answers))
-        } else {
-            Ok(None)
-        }
+        if matched { Ok(Some(answers)) } else { Ok(None) }
     }
 
     fn map_resolve_error_to_response_code(error: &ResolveError) -> ResponseCode {

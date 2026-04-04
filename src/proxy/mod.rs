@@ -9,6 +9,6 @@ mod responses;
 mod router;
 mod runtime;
 mod state;
-mod tls;
+pub(crate) mod tls;
 
 pub use runtime::{serve_explicit, serve_transparent};

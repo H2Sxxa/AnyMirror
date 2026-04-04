@@ -1,4 +1,4 @@
-use anyhow::{bail, ensure, Result};
+use anyhow::{Result, bail, ensure};
 use url::Url;
 
 pub(super) fn same_origin(left: &Url, right: &Url) -> bool {

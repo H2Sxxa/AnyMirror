@@ -9,7 +9,7 @@ use axum::{
 use super::super::{
     executor::UpstreamExecutor,
     forwarding::forward_transparent_request,
-    request_parser::{ensure_supported_method, resolve_transparent_target, ORIGINAL_SCHEME_HEADER},
+    request_parser::{ORIGINAL_SCHEME_HEADER, ensure_supported_method, resolve_transparent_target},
     responses::json_error,
     state::AppState,
     tls::TlsIntercepted,

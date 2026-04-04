@@ -1,4 +1,4 @@
-use axum::http::{header::HOST, HeaderMap, Method, StatusCode, Uri};
+use axum::http::{HeaderMap, Method, StatusCode, Uri, header::HOST};
 use axum::response::Response;
 use url::Url;
 
@@ -105,9 +105,9 @@ fn read_optional_header_map_value(
 
 #[cfg(test)]
 mod tests {
-    use axum::http::{header::HOST, HeaderMap, HeaderValue, Uri};
+    use axum::http::{HeaderMap, HeaderValue, Uri, header::HOST};
 
-    use super::{resolve_transparent_target, ORIGINAL_SCHEME_HEADER, ORIGINAL_URL_HEADER};
+    use super::{ORIGINAL_SCHEME_HEADER, ORIGINAL_URL_HEADER, resolve_transparent_target};
 
     #[test]
     fn resolves_transparent_target_from_original_url_header() {

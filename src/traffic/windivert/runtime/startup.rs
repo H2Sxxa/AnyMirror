@@ -1,13 +1,18 @@
+use std::ffi::CString;
 use std::net::SocketAddr;
+use std::sync::{Arc, atomic::AtomicBool};
 
 use anyhow::{Context, Result};
 use ipnet::{Ipv4Net, Ipv6Net};
-use windivert::{layer::WinDivertLayerTrait, WinDivert};
+use tokio::task::JoinHandle;
+use windivert_sys::{WinDivertOpen, WinDivertSetParam};
+use windows::Win32::Foundation::HANDLE;
 
-use crate::config::AppConfig;
+use crate::config::{WinDivertBackendOptions, WinDivertLayerConfig};
+use crate::traffic::TransparentInterceptRuntimeConfig;
 use crate::traffic::shared::dns::FakeDnsServer;
 use crate::traffic::shared::nat::{
-    new_transparent_nat_table, spawn_nat_cleanup_task, TransparentNatTableV4, TransparentNatTableV6,
+    TransparentNatTableV4, TransparentNatTableV6, new_transparent_nat_table, spawn_nat_cleanup_task,
 };
 use crate::traffic::windivert::config::{
     RuntimeBackend, TransparentCaptureKind, WinDivertConfig, WinDivertLayer, WinDivertRuntime,
@@ -16,7 +21,7 @@ use crate::traffic::windivert::config::{
 use crate::traffic::windivert::filters;
 use crate::workers::Workers;
 
-use super::capture::run_capture_loop;
+use super::capture::{run_raw_capture_loop, shutdown_raw_handle};
 
 #[derive(Clone)]
 struct TransparentRuntimeContext {
@@ -31,18 +36,30 @@ struct TransparentRuntimeContext {
     transparent_nat_table_v6: TransparentNatTableV6,
 }
 
+pub struct TransparentInterceptHandle {
+    nat_cleanup: JoinHandle<()>,
+    runtimes: Vec<RunningWinDivertRuntime>,
+}
+
+struct RunningWinDivertRuntime {
+    handle: HANDLE,
+    shutting_down: Arc<AtomicBool>,
+    join: JoinHandle<()>,
+}
+
 pub fn run_transparent_windivert_runtimes(
-    config: &AppConfig,
+    runtime_config: &TransparentInterceptRuntimeConfig,
+    backend: &WinDivertBackendOptions,
     fake_dns_server: FakeDnsServer,
     proxy_redirect_addr: SocketAddr,
     workers: Workers,
-) -> Result<()> {
+) -> Result<TransparentInterceptHandle> {
     let proxy_port = proxy_redirect_addr.port();
-    let tls_port = config.tls_port.unwrap_or(proxy_port + 1);
+    let tls_port = runtime_config.tls_port.unwrap_or(proxy_port + 1);
     let local_dns_port = fake_dns_server.listen_port();
-    let fake_ipv4_range = config.backend.dns.fake_ipv4_range;
-    let fake_ipv6_range = config.backend.dns.fake_ipv6_range;
-    let layer = config.backend.windivert.layer;
+    let fake_ipv4_range = runtime_config.fake_ipv4_range;
+    let fake_ipv6_range = runtime_config.fake_ipv6_range;
+    let layer = map_windivert_layer(backend.layer);
     let nat_table_v4: TransparentNatTableV4 = new_transparent_nat_table();
     let nat_table_v6: TransparentNatTableV6 = new_transparent_nat_table();
     let runtime_context = TransparentRuntimeContext {
@@ -57,7 +74,8 @@ pub fn run_transparent_windivert_runtimes(
         transparent_nat_table_v6: nat_table_v6.clone(),
     };
 
-    spawn_nat_cleanup_task(nat_table_v4.clone(), nat_table_v6.clone(), workers.clone());
+    let nat_cleanup =
+        spawn_nat_cleanup_task(nat_table_v4.clone(), nat_table_v6.clone(), workers.clone());
 
     tracing::info!(
         fake_ipv4_range = %fake_ipv4_range,
@@ -66,62 +84,67 @@ pub fn run_transparent_windivert_runtimes(
         "WinDivert transparent mode is using fake-ip routing"
     );
 
-    start_transparent_runtime(
-        "WinDivert fake-ip DNS responder started",
-        runtime_context.build_runtime_config(
-            filters::build_transparent_dns_query_filter(),
-            TransparentCaptureKind::DnsResponder,
-        ),
-        None,
-        workers.clone(),
-    )?;
-    start_transparent_runtime(
-        "WinDivert DNS-over-TCP redirect started",
-        runtime_context.build_runtime_config(
-            filters::build_transparent_dns_tcp_request_filter(),
-            TransparentCaptureKind::TcpDnsRedirect,
-        ),
-        Some(local_dns_port),
-        workers.clone(),
-    )?;
-    start_transparent_runtime(
-        "WinDivert fake-ip request capture started",
-        runtime_context.build_runtime_config(
-            filters::build_transparent_fake_ip_tcp_request_filter(
-                proxy_port,
-                tls_port,
-                fake_ipv4_range,
-                fake_ipv6_range,
+    let runtimes = vec![
+        start_transparent_runtime(
+            "WinDivert fake-ip DNS responder started",
+            runtime_context.build_runtime_config(
+                filters::build_transparent_dns_query_filter(),
+                TransparentCaptureKind::DnsResponder,
             ),
-            TransparentCaptureKind::TcpRequestRedirect,
-        ),
-        None,
-        workers.clone(),
-    )?;
-    start_transparent_runtime(
-        "WinDivert fake-ip QUIC drop strategy started",
-        runtime_context.build_runtime_config(
-            filters::build_transparent_fake_ip_quic_filter(fake_ipv4_range, fake_ipv6_range),
-            TransparentCaptureKind::UdpQuicDrop,
-        ),
-        None,
-        workers.clone(),
-    )?;
-    start_transparent_runtime(
-        "WinDivert fake-ip proxy response capture started",
-        runtime_context.build_runtime_config(
-            filters::build_transparent_tcp_proxy_response_filter(
-                proxy_port,
-                tls_port,
-                local_dns_port,
+            None,
+            workers.clone(),
+        )?,
+        start_transparent_runtime(
+            "WinDivert DNS-over-TCP redirect started",
+            runtime_context.build_runtime_config(
+                filters::build_transparent_dns_tcp_request_filter(),
+                TransparentCaptureKind::TcpDnsRedirect,
             ),
-            TransparentCaptureKind::TcpProxyResponse,
-        ),
-        None,
-        workers,
-    )?;
+            Some(local_dns_port),
+            workers.clone(),
+        )?,
+        start_transparent_runtime(
+            "WinDivert fake-ip request capture started",
+            runtime_context.build_runtime_config(
+                filters::build_transparent_fake_ip_tcp_request_filter(
+                    proxy_port,
+                    tls_port,
+                    fake_ipv4_range,
+                    fake_ipv6_range,
+                ),
+                TransparentCaptureKind::TcpRequestRedirect,
+            ),
+            None,
+            workers.clone(),
+        )?,
+        start_transparent_runtime(
+            "WinDivert fake-ip QUIC drop strategy started",
+            runtime_context.build_runtime_config(
+                filters::build_transparent_fake_ip_quic_filter(fake_ipv4_range, fake_ipv6_range),
+                TransparentCaptureKind::UdpQuicDrop,
+            ),
+            None,
+            workers.clone(),
+        )?,
+        start_transparent_runtime(
+            "WinDivert fake-ip proxy response capture started",
+            runtime_context.build_runtime_config(
+                filters::build_transparent_tcp_proxy_response_filter(
+                    proxy_port,
+                    tls_port,
+                    local_dns_port,
+                ),
+                TransparentCaptureKind::TcpProxyResponse,
+            ),
+            None,
+            workers,
+        )?,
+    ];
 
-    Ok(())
+    Ok(TransparentInterceptHandle {
+        nat_cleanup,
+        runtimes,
+    })
 }
 
 impl TransparentRuntimeContext {
@@ -153,9 +176,9 @@ fn start_transparent_runtime(
     config: WinDivertConfig,
     local_dns_port: Option<u16>,
     workers: Workers,
-) -> Result<()> {
+) -> Result<RunningWinDivertRuntime> {
     let runtime = WinDivertRuntime::new(config)?;
-    runtime.start(workers)?;
+    let running = runtime.start(workers)?;
     match local_dns_port {
         Some(port) => {
             tracing::info!(plan = %runtime.plan_summary(), local_dns_port = port, "{message}");
@@ -164,12 +187,35 @@ fn start_transparent_runtime(
             tracing::info!(plan = %runtime.plan_summary(), "{message}");
         }
     }
-    Ok(())
+    Ok(running)
+}
+
+fn map_windivert_layer(layer: WinDivertLayerConfig) -> WinDivertLayer {
+    match layer {
+        WinDivertLayerConfig::Network => WinDivertLayer::Network,
+        WinDivertLayerConfig::NetworkForward => WinDivertLayer::NetworkForward,
+    }
+}
+
+impl TransparentInterceptHandle {
+    pub async fn shutdown(self) {
+        for runtime in &self.runtimes {
+            shutdown_raw_handle(runtime.handle, &runtime.shutting_down);
+        }
+        for runtime in self.runtimes {
+            let _ = runtime.join.await;
+        }
+        self.nat_cleanup.abort();
+        let _ = self.nat_cleanup.await;
+    }
 }
 
 impl WinDivertRuntime {
-    pub fn start(&self, workers: Workers) -> Result<()> {
+    fn start(&self, workers: Workers) -> Result<RunningWinDivertRuntime> {
         let RuntimeBackend::Windows(plan) = &self.backend;
+
+        let handle = open_raw_handle(plan).context("Failed to open WinDivert handle")?;
+        apply_windivert_params(handle, plan);
 
         let proxy_port = self.config.local_proxy_addr.port();
         let tls_port = self.config.tls_port;
@@ -181,55 +227,51 @@ impl WinDivertRuntime {
         let nat_table_v4 = self.config.transparent_nat_table_v4.clone();
         let nat_table_v6 = self.config.transparent_nat_table_v6.clone();
         let worker_name = format!("windivert-{:?}", capture_kind);
+        let shutting_down = Arc::new(AtomicBool::new(false));
+        let loop_shutdown = shutting_down.clone();
+        let join = workers.spawn_blocking(worker_name, move || {
+            run_raw_capture_loop(
+                handle,
+                capture_kind,
+                fake_dns_server,
+                fake_ipv4_range,
+                fake_ipv6_range,
+                nat_table_v4,
+                nat_table_v6,
+                proxy_port,
+                tls_port,
+                local_dns_port,
+                loop_shutdown,
+            );
+        });
 
-        match plan.layer {
-            WinDivertLayer::Network => {
-                let wd = WinDivert::network(&plan.filter, plan.priority, plan.flags)
-                    .context("Failed to open WinDivert handle (Network Layer)")?;
-                apply_windivert_params(&wd, plan);
-                workers.spawn_blocking(worker_name, move || {
-                    run_capture_loop(
-                        wd,
-                        capture_kind,
-                        fake_dns_server,
-                        fake_ipv4_range,
-                        fake_ipv6_range,
-                        nat_table_v4,
-                        nat_table_v6,
-                        proxy_port,
-                        tls_port,
-                        local_dns_port,
-                    );
-                });
-            }
-            WinDivertLayer::NetworkForward => {
-                let wd = WinDivert::forward(&plan.filter, plan.priority, plan.flags)
-                    .context("Failed to open WinDivert handle (Forward Layer)")?;
-                apply_windivert_params(&wd, plan);
-                workers.spawn_blocking(worker_name, move || {
-                    run_capture_loop(
-                        wd,
-                        capture_kind,
-                        fake_dns_server,
-                        fake_ipv4_range,
-                        fake_ipv6_range,
-                        nat_table_v4,
-                        nat_table_v6,
-                        proxy_port,
-                        tls_port,
-                        local_dns_port,
-                    );
-                });
-            }
-        }
-
-        Ok(())
+        Ok(RunningWinDivertRuntime {
+            handle,
+            shutting_down,
+            join,
+        })
     }
 }
 
-fn apply_windivert_params<L: WinDivertLayerTrait>(wd: &WinDivert<L>, plan: &WindowsBackendPlan) {
+fn open_raw_handle(plan: &WindowsBackendPlan) -> Result<HANDLE> {
+    let filter =
+        CString::new(plan.filter.clone()).context("windivert filter contains null byte")?;
+    let layer = match plan.layer {
+        WinDivertLayer::Network => windivert_sys::WinDivertLayer::Network,
+        WinDivertLayer::NetworkForward => windivert_sys::WinDivertLayer::Forward,
+    };
+    let handle = unsafe { WinDivertOpen(filter.as_ptr(), layer, plan.priority, plan.flags) };
+    if handle.is_invalid() {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(handle)
+}
+
+fn apply_windivert_params(handle: HANDLE, plan: &WindowsBackendPlan) {
     for (param, value) in plan.param_updates() {
-        if let Err(error) = wd.set_param(param, value) {
+        let result = unsafe { WinDivertSetParam(handle, param, value) };
+        if !result.as_bool() {
+            let error = std::io::Error::last_os_error();
             tracing::warn!(?param, ?error, "Failed to set WinDivert parameter");
         }
     }

@@ -206,3 +206,48 @@ action:
     assert_eq!(reject.status, 451);
     assert_eq!(reject.message, "blocked for policy reasons");
 }
+
+#[test]
+fn ip_rule_matches_literal_ip_requests() {
+    let raw_rule: RawRule = serde_yaml::from_str(
+        r#"
+match:
+  ip: 203.0.113.10
+action:
+  type: mirror
+  upstream:
+    url: https://mirror.example.com/
+"#,
+    )
+    .unwrap();
+    let rules = Rules::try_from(vec![raw_rule]).unwrap();
+    let original = Url::parse("https://203.0.113.10/file.zip").unwrap();
+
+    let resolved = rules.resolve(&original).unwrap();
+
+    assert_eq!(
+        resolved.upstream().unwrap().url.as_str(),
+        "https://mirror.example.com/file.zip"
+    );
+    assert_eq!(resolved.rule.kind, RuleKind::Ip);
+}
+
+#[test]
+fn ip_cidr_rule_matches_literal_ip_requests_in_range() {
+    let raw_rule: RawRule = serde_yaml::from_str(
+        r#"
+match:
+  ip_cidr: 203.0.113.0/24
+  port: 443
+action:
+  type: direct
+"#,
+    )
+    .unwrap();
+    let rules = Rules::try_from(vec![raw_rule]).unwrap();
+    let matched = Url::parse("https://203.0.113.42/index.html").unwrap();
+    let unmatched = Url::parse("https://203.0.114.42/index.html").unwrap();
+
+    assert!(rules.resolve(&matched).is_some());
+    assert!(rules.resolve(&unmatched).is_none());
+}

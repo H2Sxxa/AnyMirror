@@ -16,6 +16,8 @@ pub struct RawRuleMatcher {
     pub host: Option<String>,
     pub hosts: Option<Vec<String>>,
     pub host_suffix: Option<String>,
+    pub ip: Option<std::net::IpAddr>,
+    pub ip_cidr: Option<String>,
     pub scheme: Option<String>,
     pub port: Option<u16>,
     pub path_prefix: Option<String>,

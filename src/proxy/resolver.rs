@@ -1,10 +1,10 @@
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
+use hickory_resolver::TokioResolver;
 use hickory_resolver::config::{NameServerConfigGroup, ResolverConfig, ResolverOpts};
 use hickory_resolver::name_server::TokioConnectionProvider;
-use hickory_resolver::TokioResolver;
 use url::Url;
 
 use crate::rules::types::{DnsMode, DnsPlan};

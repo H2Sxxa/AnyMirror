@@ -84,8 +84,7 @@ anymirror --mode transparent --config config.yml
 `--config` 也支持简单 alias。例如 `--config mcdev` 会依次尝试当前目录下的
 `config.mcdev.yaml`、`config.mcdev.yml`、`mcdev.yaml`、`mcdev.yml`。
 
-`--watch-config` 目前只会热重载规则集（`includes` / `rules`）。监听端口和 backend
-相关配置变更后，仍然需要重启进程。
+`--watch-config` 支持运行时热重载配置。规则变更会原地生效；其余运行时组件会按受影响范围进行重载，无需退出进程。
 
 ### 模式支持范围
 
@@ -173,13 +172,21 @@ includes:
 - 可立即热生效：
   - `includes`
   - `rules`
-- 仍需重启进程：
-  - `listen`
-  - `tls_port`
-  - `backend.dns.*`
-  - `backend.windivert.*`
+- 配置变化时会在运行时重建：
+  - `listen`：显式模式下只重启 HTTP listener；透明模式下重启 HTTP listener 和拦截后端
+  - `tls_port`：重启 TLS listener 和拦截后端
+  - `backend.dns.listen`：重启 fake DNS 服务和拦截后端
+  - `backend.dns.fake_ipv4_range`：重启 fake DNS 服务和拦截后端
+  - `backend.dns.fake_ipv6_range`：重启 fake DNS 服务和拦截后端
+  - `backend.dns.record_ttl_secs`：重启 fake DNS 服务和拦截后端
+  - `backend.windivert.*`：只重启拦截后端
 
-透明模式下，本地代理和 `FakeDnsServer` 会共用这份热更新后的规则，因此规则变化会同时影响请求匹配和 fake-ip DNS 判定。
+透明模式下，本地代理和 `FakeDnsServer` 会共用这份热更新后的规则，因此规则变化会同时影响请求匹配和 fake-ip DNS 判定；其余配置变化时，只会重建受影响的组件。
+
+注意：
+
+- 运行时重载仍然是顺序重建，不是新旧 generation 重叠切换，所以组件重启时可能有一个很短的中断窗口。
+- fake DNS 服务或拦截后端重建时，已有透明连接可能会被重置。
 
 ### DNS Resolver 模式
 
@@ -239,6 +246,19 @@ includes:
       type: reject
       status: 451
       message: blocked by policy
+
+  - match:
+      ip: 203.0.113.10
+    action:
+      type: direct
+
+  - match:
+      ip_cidr: 203.0.113.0/24
+      port: 443
+    action:
+      type: reject
+      status: 403
+      message: blocked literal IP range
 ```
 
 结构化匹配字段：
@@ -248,9 +268,16 @@ includes:
 - `match.host`：匹配一个域名
 - `match.hosts`：匹配一个域名列表中的任意项
 - `match.host_suffix`：匹配域名后缀，例如 `example.com`
-- `match.scheme`：对 host 类规则附加 `http` 或 `https` 限制
-- `match.port`：对 host 类规则附加端口限制
-- `match.path_prefix`：对 host 类规则附加路径前缀限制
+- `match.ip`：匹配请求 URL 中显式出现的单个 IP host
+- `match.ip_cidr`：按 CIDR 网段匹配请求 URL 中显式出现的 IP host
+- `match.scheme`：对 host 或 IP 类规则附加 `http` 或 `https` 限制
+- `match.port`：对 host 或 IP 类规则附加端口限制
+- `match.path_prefix`：对 host 或 IP 类规则附加路径前缀限制
+
+说明：
+
+- `match.ip` 和 `match.ip_cidr` 只匹配 URL host 本身就是 IP 字面量的请求，例如 `https://203.0.113.10/file`
+- 规则匹配阶段不会额外把域名解析成真实 IP 再去匹配
 
 结构化动作：
 
@@ -361,12 +388,11 @@ includes:
 - [x] 共享 NAT，用于透明请求重定向与代理响应还原
 - [x] 基于 Rustls 动态证书的透明 HTTP / HTTPS 拦截
 - [x] 基于 Hyper 的高性能 upstream 执行与完整请求体转发
-- [x] 结构化规则引擎，支持 `exact`、`prefix`、`host`、`hosts`、`host_suffix`
+- [x] 结构化规则引擎，支持 `exact`、`prefix`、`host`、`hosts`、`host_suffix`、`ip`、`ip_cidr`
 - [x] 结构化规则动作，支持 `mirror`、`direct`、`reject`
 - [x] 可扩展的 upstream 配置（`connect_ip`、`connect_host`、`sni` 与自定义 upstream DNS）
 - [x] CLI 启动参数支持配置 alias fallback（如 `--config mcdev` 自动解析到 `config.mcdev.yml`）
-- [x] 配置文件监视与规则热重载（通过 `--watch-config`）
-- [ ] 监听器、Fake DNS 服务和拦截后端的完整运行时热重载
+- [x] 通过 `--watch-config` 实现完整配置监视与运行时热重载
 - [ ] TUN/TAP 设备支持，用于跨平台部署（macOS、Linux），集成用户态 TCP/IP 协议栈
 - [ ] DoH / DoT 等加密 DNS 的拦截支持
 - [ ] 高级规则匹配（正则表达式、通配主机模式、HTTP 版本/方法筛选）

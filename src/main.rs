@@ -2,6 +2,7 @@ mod config;
 mod proxy;
 mod rules;
 mod socket;
+mod supervisors;
 mod traffic;
 mod watch;
 mod workers;

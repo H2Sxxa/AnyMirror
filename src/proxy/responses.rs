@@ -1,7 +1,7 @@
 use axum::{
+    Json,
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
 use serde::{Deserialize, Serialize};
 use tokio::signal;
@@ -44,6 +44,8 @@ pub(crate) fn rule_kind_name(matched: RuleMatch<'_>) -> &'static str {
         RuleKind::Host => "host",
         RuleKind::Hosts => "hosts",
         RuleKind::HostSuffix => "host-suffix",
+        RuleKind::Ip => "ip",
+        RuleKind::IpCidr => "ip-cidr",
     }
 }
 

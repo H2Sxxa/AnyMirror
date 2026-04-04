@@ -4,10 +4,10 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use tokio::time;
+use tokio::{sync::mpsc, time};
 
 use crate::{
-    config::{load_config, AppConfig, BackendOptions},
+    config::{AppConfig, BackendOptions, load_config},
     rules::pool::LiveRules,
     workers::Workers,
 };
@@ -27,8 +27,9 @@ pub fn spawn_config_watch(
     active_config: &AppConfig,
     live_rules: LiveRules,
     workers: Workers,
+    reload_tx: Option<mpsc::UnboundedSender<AppConfig>>,
 ) {
-    let static_config = StaticConfigSnapshot::from_config(active_config);
+    let mut static_config = StaticConfigSnapshot::from_config(active_config);
 
     workers.spawn("config-watch", async move {
         let mut interval = time::interval(CONFIG_WATCH_INTERVAL);
@@ -84,21 +85,34 @@ pub fn spawn_config_watch(
 
             match load_config(&path) {
                 Ok(reloaded_config) => {
-                    let immutable_changes =
+                    let runtime_changes =
                         static_config.describe_non_reloadable_changes(&reloaded_config);
-                    let rule_count = live_rules.replace(reloaded_config.rules);
+                    let rule_count = live_rules.replace(reloaded_config.rules.clone());
                     tracing::info!(
                         config_path = %path.display(),
                         rule_count,
                         "Hot reloaded config rules"
                     );
 
-                    if !immutable_changes.is_empty() {
-                        tracing::warn!(
+                    if !runtime_changes.is_empty() {
+                        let next_runtime_snapshot =
+                            StaticConfigSnapshot::from_config(&reloaded_config);
+                        tracing::info!(
                             config_path = %path.display(),
-                            non_reloadable_changes = %immutable_changes.join("; "),
-                            "Config contains changes that still require restart"
+                            runtime_changes = %runtime_changes.join("; "),
+                            "Config change requires runtime reload"
                         );
+                        if let Some(reload_tx) = reload_tx.as_ref() {
+                            if let Err(error) = reload_tx.send(reloaded_config) {
+                                tracing::error!(
+                                    config_path = %path.display(),
+                                    ?error,
+                                    "Failed to enqueue runtime reload"
+                                );
+                            } else {
+                                static_config = next_runtime_snapshot;
+                            }
+                        }
                     }
                 }
                 Err(error) => {

@@ -6,6 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use tokio::task::JoinHandle;
 use tokio::time;
 
 use crate::workers::Workers;
@@ -38,7 +39,7 @@ pub fn spawn_nat_cleanup_task(
     nat_table_v4: TransparentNatTableV4,
     nat_table_v6: TransparentNatTableV6,
     workers: Workers,
-) {
+) -> JoinHandle<()> {
     workers.spawn("transparent-nat-cleanup", async move {
         let mut interval = time::interval(NAT_TABLE_CLEANUP_INTERVAL);
         loop {
@@ -54,7 +55,7 @@ pub fn spawn_nat_cleanup_task(
                 );
             }
         }
-    });
+    })
 }
 
 pub fn upsert_nat_mapping<Addr>(
@@ -126,7 +127,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        new_transparent_nat_table, touch_nat_mapping, upsert_nat_mapping, TransparentNatTableV4,
+        TransparentNatTableV4, new_transparent_nat_table, touch_nat_mapping, upsert_nat_mapping,
     };
 
     #[test]

@@ -2,4 +2,4 @@ mod capture;
 mod packet;
 mod startup;
 
-pub use startup::run_transparent_windivert_runtimes;
+pub use startup::{TransparentInterceptHandle, run_transparent_windivert_runtimes};

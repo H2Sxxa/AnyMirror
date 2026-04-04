@@ -84,8 +84,8 @@ anymirror --mode transparent --config config.yml
 `--config` also supports simple aliases. For example, `--config mcdev` will try
 `config.mcdev.yaml`, `config.mcdev.yml`, `mcdev.yaml`, and `mcdev.yml` in the current directory.
 
-`--watch-config` currently hot reloads only the rule set (`includes` / `rules`). Changes to
-listener ports or backend settings still require a full process restart.
+`--watch-config` hot reloads the config file at runtime. Rule changes are applied in place, and
+runtime components are reloaded at component granularity without restarting the process.
 
 ### Mode Support
 
@@ -175,14 +175,22 @@ has stayed stable for a short window before reloading.
 - Hot reloaded immediately:
   - `includes`
   - `rules`
-- Still requires restart:
-  - `listen`
-  - `tls_port`
-  - `backend.dns.*`
-  - `backend.windivert.*`
+- Recreated at runtime when changed:
+  - `listen`: HTTP listener in explicit mode; HTTP listener plus intercept backend in transparent mode
+  - `tls_port`: TLS listener plus intercept backend
+  - `backend.dns.listen`: fake DNS server plus intercept backend
+  - `backend.dns.fake_ipv4_range`: fake DNS server plus intercept backend
+  - `backend.dns.fake_ipv6_range`: fake DNS server plus intercept backend
+  - `backend.dns.record_ttl_secs`: fake DNS server plus intercept backend
+  - `backend.windivert.*`: intercept backend only
 
-Transparent mode reuses the reloaded rules in both the local proxy and `FakeDnsServer`, so rule
-changes affect request matching and fake-ip DNS decisions without restarting the process.
+Transparent mode reuses the reloaded rules in both the local proxy and `FakeDnsServer`, and only
+recreates the components affected by each config change.
+
+Notes:
+
+- Runtime reload is still sequential, not generation-overlapped, so there can be a short interruption while a component is restarted.
+- Existing transparent connections can be reset when the fake DNS service or intercept backend is reloaded.
 
 ### DNS Resolver Modes
 
@@ -242,6 +250,19 @@ includes:
       type: reject
       status: 451
       message: blocked by policy
+
+  - match:
+      ip: 203.0.113.10
+    action:
+      type: direct
+
+  - match:
+      ip_cidr: 203.0.113.0/24
+      port: 443
+    action:
+      type: reject
+      status: 403
+      message: blocked literal IP range
 ```
 
 Structured matcher fields:
@@ -251,9 +272,16 @@ Structured matcher fields:
 - `match.host`: Match one host
 - `match.hosts`: Match any host in a list
 - `match.host_suffix`: Match a host suffix such as `example.com`
+- `match.ip`: Match one literal IP host in the request URL
+- `match.ip_cidr`: Match a literal IP host in the request URL by CIDR range
 - `match.scheme`: Optional `http` or `https` restriction for host-based rules
-- `match.port`: Optional port restriction for host-based rules
-- `match.path_prefix`: Optional path-prefix restriction for host-based rules
+- `match.port`: Optional port restriction for host- or IP-based rules
+- `match.path_prefix`: Optional path-prefix restriction for host- or IP-based rules
+
+Notes:
+
+- `match.ip` and `match.ip_cidr` only match requests whose URL host is already a literal IP such as `https://203.0.113.10/file`.
+- They do not resolve domain names to real IPs during rule matching.
 
 Structured actions:
 
@@ -364,12 +392,11 @@ Structured actions:
 - [x] Shared NAT for transparent request redirection and proxy response restoration
 - [x] Transparent HTTP and HTTPS interception with dynamic Rustls certificates
 - [x] High-performance Hyper-based upstream execution with full request body forwarding
-- [x] Structured rule engine with `exact`, `prefix`, `host`, `hosts`, and `host_suffix` matchers
+- [x] Structured rule engine with `exact`, `prefix`, `host`, `hosts`, `host_suffix`, `ip`, and `ip_cidr` matchers
 - [x] Structured rule actions with `mirror`, `direct`, and `reject`
 - [x] Extensible upstream options (`connect_ip`, `connect_host`, `sni`, and custom upstream DNS)
 - [x] CLI startup flow with config alias fallback (`--config mcdev` -> `config.mcdev.yml` etc.)
-- [x] Config file watch with rule hot reload via `--watch-config`
-- [ ] Full runtime hot reload for listeners, fake DNS server, and intercept backend
+- [x] Full config watch and runtime hot reload via `--watch-config`
 - [ ] TUN/TAP device support for cross-platform deployment (macOS, Linux) with user-space TCP/IP stack
 - [ ] Encrypted DNS interception for DoH/DoT
 - [ ] Advanced rule matching (regex, wildcard host patterns, HTTP version/method filtering)

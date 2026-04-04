@@ -1,15 +1,15 @@
 use std::net::{IpAddr, SocketAddr};
 use std::{future::Future, pin::Pin, sync::Arc};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use axum::body::Body;
-use axum::http::{header::HOST, HeaderMap, Method, Request};
+use axum::http::{HeaderMap, Method, Request, header::HOST};
 // use hyper::body::Bytes;
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpStream;
 use tokio::spawn;
-use tokio_rustls::rustls;
 use tokio_rustls::TlsConnector;
+use tokio_rustls::rustls;
 
 use crate::rules::types::UpstreamPlan;
 

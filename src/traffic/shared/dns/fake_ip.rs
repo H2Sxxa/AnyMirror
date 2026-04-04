@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use ipnet::{Ipv4Net, Ipv6Net};
 
 #[derive(Debug, Clone)]

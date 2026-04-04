@@ -7,12 +7,13 @@ use windivert::{
     address::WinDivertAddress,
     layer::{ForwardLayer, NetworkLayer},
 };
+use windivert_sys::address::WINDIVERT_ADDRESS;
 
 use crate::traffic::shared::dns::FakeDnsServer;
-use crate::traffic::shared::family::{v4::Ipv4PacketFamily, v6::Ipv6PacketFamily, IpPacketFamily};
+use crate::traffic::shared::family::{IpPacketFamily, v4::Ipv4PacketFamily, v6::Ipv6PacketFamily};
 use crate::traffic::shared::nat::{
-    touch_nat_mapping, upsert_nat_mapping, TransparentNatTableV4, TransparentNatTableV6,
-    NAT_ENTRY_CLOSING_TTL, NAT_ENTRY_ESTABLISHED_TTL,
+    NAT_ENTRY_CLOSING_TTL, NAT_ENTRY_ESTABLISHED_TTL, TransparentNatTableV4, TransparentNatTableV6,
+    touch_nat_mapping, upsert_nat_mapping,
 };
 use crate::traffic::windivert::config::TransparentCaptureKind;
 use crate::traffic::windivert::payload::extract_host;
@@ -621,6 +622,12 @@ impl SetOutboundFlag for WinDivertAddress<NetworkLayer> {
 }
 
 impl SetOutboundFlag for WinDivertAddress<ForwardLayer> {
+    fn set_outbound_flag(&mut self, outbound: bool) {
+        self.set_outbound(outbound);
+    }
+}
+
+impl SetOutboundFlag for WINDIVERT_ADDRESS {
     fn set_outbound_flag(&mut self, outbound: bool) {
         self.set_outbound(outbound);
     }

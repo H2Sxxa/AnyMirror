@@ -1,6 +1,6 @@
 use std::future::Future;
 
-use tokio::{spawn, task::spawn_blocking};
+use tokio::{spawn, task::JoinHandle, task::spawn_blocking};
 
 use super::{
     registry::Workers,
@@ -8,7 +8,7 @@ use super::{
 };
 
 impl Workers {
-    pub fn spawn<F>(&self, name: impl Into<String>, future: F)
+    pub fn spawn<F>(&self, name: impl Into<String>, future: F) -> JoinHandle<()>
     where
         F: Future<Output = ()> + Send + 'static,
     {
@@ -51,10 +51,10 @@ impl Workers {
                     );
                 }
             }
-        });
+        })
     }
 
-    pub fn spawn_blocking<F>(&self, name: impl Into<String>, work: F)
+    pub fn spawn_blocking<F>(&self, name: impl Into<String>, work: F) -> JoinHandle<()>
     where
         F: FnOnce() + Send + 'static,
     {
@@ -97,6 +97,6 @@ impl Workers {
                     );
                 }
             }
-        });
+        })
     }
 }

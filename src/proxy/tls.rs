@@ -1,5 +1,5 @@
-use anyhow::{anyhow, Context, Result};
-use axum::{extract::Request, middleware::map_request, Router};
+use anyhow::{Context, Result, anyhow};
+use axum::{Router, extract::Request, middleware::map_request};
 use hyper::{body::Incoming, service::service_fn};
 use hyper_util::{
     rt::{TokioExecutor, TokioIo},
@@ -12,12 +12,13 @@ use std::{collections::HashMap, io::Cursor};
 use std::{fs, path::Path, sync::Arc};
 use tokio::net::TcpListener;
 use tokio::spawn;
+use tokio::sync::oneshot;
+use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls::{
+    ServerConfig,
     server::{ClientHello, ResolvesServerCert},
     sign::CertifiedKey,
-    ServerConfig,
 };
-use tokio_rustls::TlsAcceptor;
 use tower::Service;
 
 #[derive(Clone, Debug)]
@@ -114,7 +115,11 @@ impl ResolvesServerCert for DynamicCertResolver {
     }
 }
 
-pub async fn serve_app_tls_with_listener(app: Router, listener: TcpListener) -> Result<()> {
+pub async fn serve_app_tls_with_listener(
+    app: Router,
+    listener: TcpListener,
+    mut shutdown: oneshot::Receiver<()>,
+) -> Result<()> {
     // Generate or load CA certificate
     let (ca_cert_pem, ca_key_pem) = get_or_generate_ca_cert()?;
 
@@ -144,10 +149,16 @@ pub async fn serve_app_tls_with_listener(app: Router, listener: TcpListener) -> 
 
     // Hyper 1.x / axum 0.8 style pure TCP loop
     loop {
-        let (tcp, _remote_addr) = match listener.accept().await {
+        let accept_result = tokio::select! {
+            _ = &mut shutdown => {
+                return Ok(());
+            }
+            result = listener.accept() => result
+        };
+        let (tcp, _remote_addr) = match accept_result {
             Ok(conn) => conn,
-            Err(e) => {
-                tracing::error!("Failed to accept TLS connection: {}", e);
+            Err(error) => {
+                tracing::error!(?error, "Failed to accept TLS connection");
                 continue;
             }
         };

@@ -1,5 +1,6 @@
 use std::net::IpAddr;
 
+use ipnet::IpNet;
 use serde::Deserialize;
 use url::Url;
 
@@ -15,6 +16,7 @@ pub enum RuleMatcher {
     ExactUrl { origin: Url },
     PrefixUrl { origin: Url },
     Host(HostRuleMatcher),
+    Ip(IpRuleMatcher),
 }
 
 #[derive(Debug, Clone)]
@@ -26,10 +28,24 @@ pub struct HostRuleMatcher {
 }
 
 #[derive(Debug, Clone)]
+pub struct IpRuleMatcher {
+    pub pattern: IpPattern,
+    pub scheme: Option<String>,
+    pub port: Option<u16>,
+    pub path_prefix: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub enum HostPattern {
     Exact(String),
     AnyOf(Vec<String>),
     Suffix(String),
+}
+
+#[derive(Debug, Clone)]
+pub enum IpPattern {
+    Exact(IpAddr),
+    Cidr(IpNet),
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +99,8 @@ pub enum RuleKind {
     Host,
     Hosts,
     HostSuffix,
+    Ip,
+    IpCidr,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]

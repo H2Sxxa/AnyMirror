@@ -1,90 +1,24 @@
 use ipnet::{Ipv4Net, Ipv6Net};
-use windivert::{
-    address::WinDivertAddress,
-    error::WinDivertError,
-    layer::{ForwardLayer, NetworkLayer, WinDivertLayerTrait},
-    packet::WinDivertPacket,
-    WinDivert,
+use std::borrow::Cow;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use windivert_sys::ChecksumFlags;
+use windivert_sys::{
+    WinDivertClose, WinDivertHelperCalcChecksums, WinDivertRecv, WinDivertSend, WinDivertShutdown,
+    WinDivertShutdownMode, address::WINDIVERT_ADDRESS,
+};
+use windows::Win32::Foundation::HANDLE;
 
 use crate::traffic::shared::dns::FakeDnsServer;
 use crate::traffic::shared::nat::{TransparentNatTableV4, TransparentNatTableV6};
 use crate::traffic::windivert::config::TransparentCaptureKind;
 
-use super::packet::{handle_dns_query_packet, process_packet, SetOutboundFlag};
+use super::packet::{handle_dns_query_packet, process_packet};
 
-pub(super) trait CaptureLoopHandle {
-    type Layer: WinDivertLayerTrait;
-
-    fn recv_packet<'a>(
-        &self,
-        buffer: Option<&'a mut [u8]>,
-    ) -> std::result::Result<WinDivertPacket<'a, Self::Layer>, WinDivertError>;
-
-    fn send_packet(
-        &self,
-        packet: &WinDivertPacket<'_, Self::Layer>,
-    ) -> std::result::Result<u32, WinDivertError>;
-
-    fn recalculate_checksums(
-        &self,
-        packet: &mut WinDivertPacket<'_, Self::Layer>,
-    ) -> std::result::Result<(), WinDivertError>;
-}
-
-impl CaptureLoopHandle for WinDivert<NetworkLayer> {
-    type Layer = NetworkLayer;
-
-    fn recv_packet<'a>(
-        &self,
-        buffer: Option<&'a mut [u8]>,
-    ) -> std::result::Result<WinDivertPacket<'a, Self::Layer>, WinDivertError> {
-        self.recv(buffer)
-    }
-
-    fn send_packet(
-        &self,
-        packet: &WinDivertPacket<'_, Self::Layer>,
-    ) -> std::result::Result<u32, WinDivertError> {
-        self.send(packet)
-    }
-
-    fn recalculate_checksums(
-        &self,
-        packet: &mut WinDivertPacket<'_, Self::Layer>,
-    ) -> std::result::Result<(), WinDivertError> {
-        packet.recalculate_checksums(ChecksumFlags::new())
-    }
-}
-
-impl CaptureLoopHandle for WinDivert<ForwardLayer> {
-    type Layer = ForwardLayer;
-
-    fn recv_packet<'a>(
-        &self,
-        buffer: Option<&'a mut [u8]>,
-    ) -> std::result::Result<WinDivertPacket<'a, Self::Layer>, WinDivertError> {
-        self.recv(buffer)
-    }
-
-    fn send_packet(
-        &self,
-        packet: &WinDivertPacket<'_, Self::Layer>,
-    ) -> std::result::Result<u32, WinDivertError> {
-        self.send(packet)
-    }
-
-    fn recalculate_checksums(
-        &self,
-        packet: &mut WinDivertPacket<'_, Self::Layer>,
-    ) -> std::result::Result<(), WinDivertError> {
-        packet.recalculate_checksums(ChecksumFlags::new())
-    }
-}
-
-pub(super) fn run_capture_loop<H>(
-    wd: H,
+pub(super) fn run_raw_capture_loop(
+    handle: HANDLE,
     capture_kind: TransparentCaptureKind,
     fake_dns_server: Option<FakeDnsServer>,
     fake_ipv4_range: Ipv4Net,
@@ -94,48 +28,95 @@ pub(super) fn run_capture_loop<H>(
     proxy_port: u16,
     tls_port: u16,
     local_dns_port: u16,
-) where
-    H: CaptureLoopHandle,
-    WinDivertAddress<H::Layer>: SetOutboundFlag,
-{
+    shutting_down: Arc<AtomicBool>,
+) {
     let mut rx_buf = vec![0u8; 65535];
     loop {
-        match wd.recv_packet(Some(&mut rx_buf)) {
-            Ok(mut packet) => {
-                let disposition = if matches!(capture_kind, TransparentCaptureKind::DnsResponder) {
-                    handle_dns_query_packet(
-                        &mut packet.data,
-                        &mut packet.address,
-                        fake_dns_server.as_ref(),
-                    )
-                } else {
-                    process_packet(
-                        packet.data.to_mut(),
-                        &mut packet.address,
-                        &capture_kind,
-                        fake_dns_server.as_ref(),
-                        fake_ipv4_range,
-                        fake_ipv6_range,
-                        &nat_table_v4,
-                        &nat_table_v6,
-                        proxy_port,
-                        tls_port,
-                        local_dns_port,
-                    )
-                };
-                if disposition.should_recalculate_checksums() {
-                    let _ = wd.recalculate_checksums(&mut packet);
-                }
-                if disposition.should_reinject() {
-                    if let Err(error) = wd.send_packet(&packet) {
-                        tracing::error!(?error, "WinDivert send failed");
-                    }
-                }
-            }
-            Err(error) => {
+        let mut recv_len = 0u32;
+        let mut address = WINDIVERT_ADDRESS::default();
+        let recv_ok = unsafe {
+            WinDivertRecv(
+                handle,
+                rx_buf.as_mut_ptr().cast(),
+                rx_buf.len() as u32,
+                &mut recv_len,
+                &mut address,
+            )
+        };
+
+        if !recv_ok.as_bool() {
+            let error = std::io::Error::last_os_error();
+            if shutting_down.load(Ordering::Relaxed) {
+                tracing::info!("WinDivert capture loop stopped");
+            } else {
                 tracing::error!(?error, "WinDivert recv failed");
-                break;
+            }
+            break;
+        }
+
+        let mut packet = Cow::Borrowed(&rx_buf[..recv_len as usize]);
+        let disposition = if matches!(capture_kind, TransparentCaptureKind::DnsResponder) {
+            handle_dns_query_packet(&mut packet, &mut address, fake_dns_server.as_ref())
+        } else {
+            process_packet(
+                packet.to_mut(),
+                &mut address,
+                &capture_kind,
+                fake_dns_server.as_ref(),
+                fake_ipv4_range,
+                fake_ipv6_range,
+                &nat_table_v4,
+                &nat_table_v6,
+                proxy_port,
+                tls_port,
+                local_dns_port,
+            )
+        };
+
+        if disposition.should_recalculate_checksums() {
+            let checksum_ok = unsafe {
+                WinDivertHelperCalcChecksums(
+                    packet.to_mut().as_mut_ptr().cast(),
+                    packet.len() as u32,
+                    &mut address,
+                    ChecksumFlags::new(),
+                )
+            };
+            if !checksum_ok.as_bool() {
+                let error = std::io::Error::last_os_error();
+                tracing::warn!(?error, "WinDivert checksum recalculation failed");
             }
         }
+
+        if disposition.should_reinject() {
+            let mut send_len = 0u32;
+            let send_ok = unsafe {
+                WinDivertSend(
+                    handle,
+                    packet.as_ptr().cast(),
+                    packet.len() as u32,
+                    &mut send_len,
+                    &address,
+                )
+            };
+            if !send_ok.as_bool() {
+                let error = std::io::Error::last_os_error();
+                tracing::error!(?error, "WinDivert send failed");
+            }
+        }
+    }
+}
+
+pub(super) fn shutdown_raw_handle(handle: HANDLE, shutting_down: &AtomicBool) {
+    shutting_down.store(true, Ordering::Relaxed);
+    let shutdown_ok = unsafe { WinDivertShutdown(handle, WinDivertShutdownMode::Both) };
+    if !shutdown_ok.as_bool() {
+        let error = std::io::Error::last_os_error();
+        tracing::warn!(?error, "WinDivert shutdown failed");
+    }
+    let close_ok = unsafe { WinDivertClose(handle) };
+    if !close_ok.as_bool() {
+        let error = std::io::Error::last_os_error();
+        tracing::warn!(?error, "WinDivert close failed");
     }
 }

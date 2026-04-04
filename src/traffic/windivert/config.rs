@@ -4,13 +4,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{Context, Result, bail, ensure};
 use ipnet::{Ipv4Net, Ipv6Net};
 use windivert::prelude::{WinDivertFlags, WinDivertParam};
 
 use crate::traffic::shared::dns::FakeDnsServer;
 use crate::traffic::shared::nat::{
-    new_transparent_nat_table, TransparentNatTableV4, TransparentNatTableV6,
+    TransparentNatTableV4, TransparentNatTableV6, new_transparent_nat_table,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

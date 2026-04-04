@@ -1,4 +1,5 @@
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
+use ipnet::IpNet;
 use url::Url;
 
 use super::matcher::{
@@ -7,8 +8,8 @@ use super::matcher::{
 use super::pool::Rules;
 use super::schema::{RawDnsPlan, RawRule, RawRuleAction, RawRuleMatcher, RawUpstreamPlan};
 use super::types::{
-    DnsMode, DnsPlan, HostPattern, HostRuleMatcher, RejectRuleAction, Rule, RuleAction,
-    RuleMatcher, UpstreamPlan,
+    DnsMode, DnsPlan, HostPattern, HostRuleMatcher, IpPattern, IpRuleMatcher, RejectRuleAction,
+    Rule, RuleAction, RuleMatcher, UpstreamPlan,
 };
 
 impl TryFrom<Vec<RawRule>> for Rules {
@@ -49,6 +50,8 @@ impl TryFrom<RawRuleMatcher> for RuleMatcher {
             host,
             hosts,
             host_suffix,
+            ip,
+            ip_cidr,
             scheme,
             port,
             path_prefix,
@@ -69,10 +72,12 @@ impl TryFrom<RawRuleMatcher> for RuleMatcher {
             + usize::from(prefix.is_some())
             + usize::from(host.is_some())
             + usize::from(hosts.is_some())
-            + usize::from(host_suffix.is_some());
+            + usize::from(host_suffix.is_some())
+            + usize::from(ip.is_some())
+            + usize::from(ip_cidr.is_some());
         ensure!(
             exact_count == 1,
-            "rule.match must contain exactly one of exact, prefix, host, hosts, or host_suffix"
+            "rule.match must contain exactly one of exact, prefix, host, hosts, host_suffix, ip, or ip_cidr"
         );
 
         if let Some(origin) = exact {
@@ -115,6 +120,27 @@ impl TryFrom<RawRuleMatcher> for RuleMatcher {
                 .collect::<Result<Vec<_>>>()?;
             return Ok(Self::Host(HostRuleMatcher {
                 pattern: HostPattern::AnyOf(normalized_hosts),
+                scheme,
+                port,
+                path_prefix,
+            }));
+        }
+
+        if let Some(ip) = ip {
+            return Ok(Self::Ip(IpRuleMatcher {
+                pattern: IpPattern::Exact(ip),
+                scheme,
+                port,
+                path_prefix,
+            }));
+        }
+
+        if let Some(ip_cidr) = ip_cidr {
+            let cidr = ip_cidr
+                .parse::<IpNet>()
+                .with_context(|| format!("invalid match.ip_cidr `{}`", ip_cidr))?;
+            return Ok(Self::Ip(IpRuleMatcher {
+                pattern: IpPattern::Cidr(cidr),
                 scheme,
                 port,
                 path_prefix,
@@ -223,6 +249,16 @@ impl Rule {
                 ensure!(
                     upstream.url.query().is_none(),
                     "host rules with path_prefix cannot use upstream.url query strings: `{}`",
+                    upstream.url
+                );
+            }
+        }
+
+        if let (RuleMatcher::Ip(ip_matcher), RuleAction::Mirror(upstream)) = (matcher, action) {
+            if ip_matcher.path_prefix.is_some() {
+                ensure!(
+                    upstream.url.query().is_none(),
+                    "ip rules with path_prefix cannot use upstream.url query strings: `{}`",
                     upstream.url
                 );
             }

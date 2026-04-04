@@ -5,13 +5,12 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use ipnet::{Ipv4Net, Ipv6Net};
 use serde::Deserialize;
 
 use crate::rules::pool::Rules;
 use crate::rules::schema::RawRule;
-use crate::traffic::windivert::WinDivertLayer;
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -29,7 +28,13 @@ pub struct BackendOptions {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WinDivertBackendOptions {
-    pub layer: WinDivertLayer,
+    pub layer: WinDivertLayerConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WinDivertLayerConfig {
+    Network,
+    NetworkForward,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -244,10 +249,10 @@ fn default_fake_ip_record_ttl_secs() -> u64 {
     60
 }
 
-fn parse_windivert_layer(value: &str) -> Result<WinDivertLayer> {
+fn parse_windivert_layer(value: &str) -> Result<WinDivertLayerConfig> {
     match value {
-        "network" => Ok(WinDivertLayer::Network),
-        "network-forward" | "network_forward" => Ok(WinDivertLayer::NetworkForward),
+        "network" => Ok(WinDivertLayerConfig::Network),
+        "network-forward" | "network_forward" => Ok(WinDivertLayerConfig::NetworkForward),
         _ => bail!(
             "invalid backend.windivert.layer `{}` (expected `network` or `network-forward`)",
             value
