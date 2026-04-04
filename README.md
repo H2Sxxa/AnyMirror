@@ -1,6 +1,6 @@
 # AnyMirror
 
-AnyMirror is a transparent L3 proxy and URL redirection tool written in Rust. It intercepts outbound network traffic at the IP layer and redirects requests to specified mirror destinations without requiring client-side configuration.
+AnyMirror is a transparent L3 proxy and URL redirection tool written in Rust. It intercepts outbound network traffic at the IP layer and redirects selected requests to mirror or policy destinations. In common DNS setups this works without per-application proxy configuration.
 
 ## Overview
 
@@ -22,14 +22,20 @@ This approach stays transparent to applications while avoiding the classic "same
 
 ## Requirements
 
+### Build Requirements
+
 - Rust toolchain 1.70+
+- WinDivert SDK files available when building transparent mode from source
+
+### Runtime Requirements
+
 - Explicit mode:
   - No WinDivert dependency
   - Works as a normal local HTTP/HTTPS proxy
 - Transparent mode:
   - Windows 10 or later
   - Administrator privileges
-  - WinDivert driver files available beside the executable
+  - WinDivert runtime files available beside the executable
 
 ## Installation & Setup
 
@@ -38,13 +44,12 @@ This approach stays transparent to applications while avoiding the classic "same
 The transparent proxy mode requires the WinDivert driver. Download and install it:
 
 1. Download WinDivert from the [official releases page](https://reqrypt.org/windivert.html)
-2. Extract the archive. You need the following files in your project directory:
-   - `WinDivert64.sys` (or `WinDivert32.sys` for 32-bit systems) - the kernel driver
-   - `WinDivert.dll` - the runtime library
-   - `WinDivert.lib` - the import library (needed for compilation)
+2. Extract the archive.
+   - Runtime files: `WinDivert64.sys` (or `WinDivert32.sys`) and `WinDivert.dll`
+   - Build-time file: `WinDivert.lib` if you compile AnyMirror from source
 3. The driver will be loaded automatically when you run anymirror in transparent mode with administrator privileges
 
-**Note:** Place all three files in the project root directory where the executable will run.
+**Note:** Keep the runtime files beside the executable. If you build from source, keep `WinDivert.lib` available for linking as well.
 
 ### 2. Trust the TLS Certificate
 
@@ -85,7 +90,8 @@ anymirror --mode transparent --config config.yml
 `config.mcdev.yaml`, `config.mcdev.yml`, `mcdev.yaml`, and `mcdev.yml` in the current directory.
 
 `--watch-config` hot reloads the config file at runtime. Rule changes are applied in place, and
-runtime components are reloaded at component granularity without restarting the process.
+affected runtime components are restarted inside the same process. This keeps the process alive,
+but reload is still not zero-downtime.
 
 ### Mode Support
 
@@ -159,7 +165,7 @@ includes:
 
 - **listen:** Server address and port to bind to (e.g., `127.0.0.1:8787`)
 - **tls_port** (optional): Custom HTTPS proxy port. If not specified, defaults to `listen_port + 1`. For example, if `listen` is `127.0.0.1:8787`, the HTTPS port will be `8788` unless overridden here.
-- **backend.dns.listen**: Local fake-ip DNS server address. Transparent fake-ip mode expects your system or application DNS to query this address.
+- **backend.dns.listen**: Local fake-ip DNS server address. This is the local fake DNS listener used by transparent mode. Ordinary UDP/53 and TCP/53 traffic can be redirected into it by the intercept backend; pointing system or application DNS directly at it is mainly useful in special DNS environments.
 - **backend.dns.fake_ipv4_range**: IPv4 fake-ip pool used for transparent redirection. WinDivert only intercepts TCP connections whose destination falls inside this range.
 - **backend.dns.fake_ipv6_range**: IPv6 fake-ip pool used for transparent redirection. WinDivert also intercepts TCP connections whose destination falls inside this range.
 - **backend.dns.record_ttl_secs**: TTL used for generated fake A and AAAA records.
@@ -282,6 +288,7 @@ Notes:
 
 - `match.ip` and `match.ip_cidr` only match requests whose URL host is already a literal IP such as `https://203.0.113.10/file`.
 - They do not resolve domain names to real IPs during rule matching.
+- Rule order still matters. When multiple rules match, the earliest rule in the config wins.
 
 Structured actions:
 
@@ -300,6 +307,12 @@ Structured actions:
                       +----------+-----------+
                                  |
                                  v
+                      +----------+-----------+
+                      |      LiveRules       |
+                      |  compiled RulePool   |
+                      +----------+-----------+
+                                 |
+                                 v
 +-----------------------------------------------------------+
 |                    Transparent Runtime                    |
 |             proxy::runtime::serve_transparent             |
@@ -307,47 +320,49 @@ Structured actions:
                        |                |
                        |                |
                        v                v
-             +---------+----+    +------+------------------+
-             | FakeDnsServer |    |   Intercept Backend    |
-             | shared/dns    |    |   current: WinDivert   |
-             +---------+----+    +------+------------------+
-                       |                |
-                       |                |
-                       |                v
-                       |      +---------+------------------+
-                       |      |  DNS UDP responder         |
-                       |      |  DNS TCP redirect          |
-                       |      |  Fake-IP TCP redirect      |
-                       |      |  QUIC drop policy          |
-                       |      |  Proxy response rewrite    |
-                       |      +---------+------------------+
-                       |                |
-                       |                v
-                       |      +---------+------------------+
-                       |      |        Shared NAT          |
-                       |      |     traffic/shared/nat     |
-                       |      +---------+------------------+
-                       |                |
-                       +----------------+
-                                        |
-                                        v
-                        +---------------+---------------+
-                        |     Local Transparent Proxy   |
-                        | HTTP :8787 / TLS :8788        |
-                        +---------------+---------------+
-                                        |
-                                        v
-                             +----------+----------+
-                             |    Rule Resolution  |
-                             |  mirror or direct   |
-                             +----------+----------+
-                                        |
-                      +-----------------+-----------------+
-                      |                                   |
-                      v                                   v
-               +------+-------+                    +------+------+
-               | Mirror Upstream|                  | Original Up |
-               +----------------+                  +-------------+
+              +--------+---------+   +--+------------------+
+              |    Supervisors   |   |      Workers        |
+              | listener/dns/    |   | config watch / DNS  |
+              | intercept        |   | server / WinDivert  |
+              +--------+---------+   +---------------------+
+                       |
+     +-----------------+-------------------------------+
+     |                 |                               |
+     v                 v                               v
++----+---------+  +----+---------+            +--------+---------+
+| Local Proxy  |  | FakeDnsServer |            | Intercept Backend |
+| HTTP/TLS     |  | shared/dns    |            | current: WinDivert|
++----+---------+  +----+---------+            +--------+---------+
+     |                 |                               |
+     |                 |                               v
+     |                 |                    +----------+----------+
+     |                 |                    | DNS UDP responder   |
+     |                 |                    | DNS TCP redirect    |
+     |                 |                    | Fake-IP TCP redirect|
+     |                 |                    | QUIC drop           |
+     |                 |                    | Proxy response rw   |
+     |                 |                    +----------+----------+
+     |                 |                               |
+     +-----------------+-------------------------------+
+                                 |
+                                 v
+                      +----------+-----------+
+                      |      Shared NAT      |
+                      |   traffic/shared     |
+                      +----------+-----------+
+                                 |
+                                 v
+                      +----------+-----------+
+                      |   Mirror / Direct    |
+                      |    upstream choice   |
+                      +----------+-----------+
+                                 |
+                   +-------------+-------------+
+                   |                           |
+                   v                           v
+            +------+-------+            +------+------+
+            | Mirror Upstream|          | Original Up |
+            +----------------+          +-------------+
 ```
 
 ### Responsibilities
@@ -399,6 +414,6 @@ Structured actions:
 - [x] Full config watch and runtime hot reload via `--watch-config`
 - [ ] TUN/TAP device support for cross-platform deployment (macOS, Linux) with user-space TCP/IP stack
 - [ ] Encrypted DNS interception for DoH/DoT
-- [ ] Advanced rule matching (regex, wildcard host patterns, HTTP version/method filtering)
+- [ ] Advanced structured matching (`method`, richer path/query constraints, optional wildcard host rules)
 - [ ] Built-in rule presets/import composition
 - [ ] Traffic monitoring and statistics

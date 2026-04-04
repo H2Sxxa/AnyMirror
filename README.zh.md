@@ -1,6 +1,6 @@
 # AnyMirror
 
-AnyMirror 是一款用 Rust 编写的透明 L3 代理工具，可以在网络层截获并重定向指定的 URL 请求到镜像服务器，无需在客户端进行任何配置。
+AnyMirror 是一款用 Rust 编写的透明 L3 代理与 URL 重定向工具，可以在网络层截获出站流量，并把命中的请求转发到镜像或策略目标。在常见 DNS 环境下，这通常不需要做按应用逐个配置的代理设置。
 
 ## 原理概述
 
@@ -22,14 +22,20 @@ AnyMirror 现在采用基于 fake-ip 的透明代理链路：
 
 ## 系统要求
 
+### 构建要求
+
 - Rust 工具链 1.70 或以上
+- 如果要从源码构建透明模式，需要可用的 WinDivert SDK 文件
+
+### 运行要求
+
 - 显式代理模式：
   - 不依赖 WinDivert
   - 作为普通本地 HTTP/HTTPS 代理运行
 - 透明代理模式：
   - Windows 10 或更高版本
   - 管理员权限
-  - 可执行文件同目录下提供 WinDivert 驱动文件
+  - 可执行文件同目录下提供 WinDivert 运行时文件
 
 ## 安装与配置
 
@@ -38,13 +44,12 @@ AnyMirror 现在采用基于 fake-ip 的透明代理链路：
 透明代理模式需要 WinDivert 驱动。下载并安装步骤如下：
 
 1. 从 [官方发布页面](https://reqrypt.org/windivert.html) 下载 WinDivert
-2. 解压文件，需要以下文件放在项目目录中：
-   - `WinDivert64.sys`（32 位系统使用 `WinDivert32.sys`）- 内核驱动
-   - `WinDivert.dll` - 运行时库
-   - `WinDivert.lib` - 导入库（编译时需要）
+2. 解压文件：
+   - 运行时文件：`WinDivert64.sys`（32 位系统使用 `WinDivert32.sys`）和 `WinDivert.dll`
+   - 构建期文件：如果你要从源码编译 AnyMirror，还需要 `WinDivert.lib`
 3. 以管理员权限运行透明代理时，驱动会自动加载
 
-**注意：** 将所有三个文件放在项目根目录，与可执行文件相同的目录。
+**注意：** 运行时文件需要和可执行文件放在同一目录；如果从源码构建，还要保证 `WinDivert.lib` 可用于链接。
 
 ### 2. 信任 TLS 证书
 
@@ -84,7 +89,7 @@ anymirror --mode transparent --config config.yml
 `--config` 也支持简单 alias。例如 `--config mcdev` 会依次尝试当前目录下的
 `config.mcdev.yaml`、`config.mcdev.yml`、`mcdev.yaml`、`mcdev.yml`。
 
-`--watch-config` 支持运行时热重载配置。规则变更会原地生效；其余运行时组件会按受影响范围进行重载，无需退出进程。
+`--watch-config` 支持运行时热重载配置。规则变更会原地生效；其余运行时组件会在同一进程内按受影响范围重启。也就是说进程不退出，但重载仍然不是零中断。
 
 ### 模式支持范围
 
@@ -158,7 +163,7 @@ includes:
 
 - **listen：** 代理服务绑定的地址和端口（例如 `127.0.0.1:8787`）
 - **tls_port** （可选）：自定义 HTTPS 代理端口。如不指定，默认为 `listen_port + 1`。例如 `listen` 为 `127.0.0.1:8787` 时，HTTPS 端口默认为 `8788`，除非在此指定其他端口。
-- **backend.dns.listen**：本地 fake-ip DNS 服务地址。透明 fake-ip 模式要求系统或应用的 DNS 查询发到这里。
+- **backend.dns.listen**：本地 fake-ip DNS 服务地址。它是透明模式使用的本地 fake DNS listener。普通 UDP/53 和 TCP/53 流量可以由拦截后端导入这里；只有在特殊 DNS 环境下，才更需要显式把系统或应用 DNS 指向这个地址。
 - **backend.dns.fake_ipv4_range**：透明重定向使用的 IPv4 fake-ip 地址池。WinDivert 只会拦截目标地址落在这个网段内的 TCP 连接。
 - **backend.dns.fake_ipv6_range**：透明重定向使用的 IPv6 fake-ip 地址池。WinDivert 也会拦截目标地址落在这个网段内的 TCP 连接。
 - **backend.dns.record_ttl_secs**：生成 fake A 和 AAAA 记录时使用的 TTL。
@@ -278,6 +283,7 @@ includes:
 
 - `match.ip` 和 `match.ip_cidr` 只匹配 URL host 本身就是 IP 字面量的请求，例如 `https://203.0.113.10/file`
 - 规则匹配阶段不会额外把域名解析成真实 IP 再去匹配
+- 规则顺序仍然有效。如果多个规则都命中，始终以配置文件里最靠前的规则为准
 
 结构化动作：
 
@@ -296,6 +302,12 @@ includes:
                       +----------+-----------+
                                  |
                                  v
+                      +----------+-----------+
+                      |      LiveRules       |
+                      |  编译后的 RulePool    |
+                      +----------+-----------+
+                                 |
+                                 v
 +-----------------------------------------------------------+
 |                    Transparent Runtime                    |
 |             proxy::runtime::serve_transparent             |
@@ -303,47 +315,49 @@ includes:
                        |                |
                        |                |
                        v                v
-             +---------+----+    +------+------------------+
-             | FakeDnsServer |    |   Intercept Backend    |
-             | shared/dns    |    |   当前实现: WinDivert  |
-             +---------+----+    +------+------------------+
-                       |                |
-                       |                |
-                       |                v
-                       |      +---------+------------------+
-                       |      |  DNS UDP responder         |
-                       |      |  DNS TCP redirect          |
-                       |      |  Fake-IP TCP redirect      |
-                       |      |  QUIC drop policy          |
-                       |      |  Proxy response rewrite    |
-                       |      +---------+------------------+
-                       |                |
-                       |                v
-                       |      +---------+------------------+
-                       |      |        Shared NAT          |
-                       |      |     traffic/shared/nat     |
-                       |      +---------+------------------+
-                       |                |
-                       +----------------+
-                                        |
-                                        v
-                        +---------------+---------------+
-                        |     Local Transparent Proxy   |
-                        | HTTP :8787 / TLS :8788        |
-                        +---------------+---------------+
-                                        |
-                                        v
-                             +----------+----------+
-                             |    Rule Resolution  |
-                             |  mirror or direct   |
-                             +----------+----------+
-                                        |
-                      +-----------------+-----------------+
-                      |                                   |
-                      v                                   v
-               +------+-------+                    +------+------+
-               | Mirror Upstream|                  | Original Up |
-               +----------------+                  +-------------+
+              +--------+---------+   +--+------------------+
+              |    Supervisors   |   |      Workers        |
+              | listener/dns/    |   | config watch / DNS  |
+              | intercept        |   | server / WinDivert  |
+              +--------+---------+   +---------------------+
+                       |
+     +-----------------+-------------------------------+
+     |                 |                               |
+     v                 v                               v
++----+---------+  +----+---------+            +--------+---------+
+| Local Proxy  |  | FakeDnsServer |            | Intercept Backend |
+| HTTP/TLS     |  | shared/dns    |            | 当前实现: WinDivert|
++----+---------+  +----+---------+            +--------+---------+
+     |                 |                               |
+     |                 |                               v
+     |                 |                    +----------+----------+
+     |                 |                    | DNS UDP responder   |
+     |                 |                    | DNS TCP redirect    |
+     |                 |                    | Fake-IP TCP redirect|
+     |                 |                    | QUIC drop           |
+     |                 |                    | Proxy response rw   |
+     |                 |                    +----------+----------+
+     |                 |                               |
+     +-----------------+-------------------------------+
+                                 |
+                                 v
+                      +----------+-----------+
+                      |      Shared NAT      |
+                      |   traffic/shared     |
+                      +----------+-----------+
+                                 |
+                                 v
+                      +----------+-----------+
+                      |   Mirror / Direct    |
+                      |      upstream 决策    |
+                      +----------+-----------+
+                                 |
+                   +-------------+-------------+
+                   |                           |
+                   v                           v
+            +------+-------+            +------+------+
+            | Mirror Upstream|          | Original Up |
+            +----------------+          +-------------+
 ```
 
 ### 职责划分
@@ -395,6 +409,6 @@ includes:
 - [x] 通过 `--watch-config` 实现完整配置监视与运行时热重载
 - [ ] TUN/TAP 设备支持，用于跨平台部署（macOS、Linux），集成用户态 TCP/IP 协议栈
 - [ ] DoH / DoT 等加密 DNS 的拦截支持
-- [ ] 高级规则匹配（正则表达式、通配主机模式、HTTP 版本/方法筛选）
+- [ ] 更强的结构化匹配（`method`、更丰富的 path/query 约束、可选通配 host 规则）
 - [ ] 内置规则预设与规则集组合
 - [ ] 流量监控和统计
