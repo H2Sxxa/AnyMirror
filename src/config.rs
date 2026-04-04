@@ -9,7 +9,8 @@ use anyhow::{bail, Context, Result};
 use ipnet::{Ipv4Net, Ipv6Net};
 use serde::Deserialize;
 
-use crate::rules::types::{RawRule, Rules};
+use crate::rules::pool::Rules;
+use crate::rules::schema::RawRule;
 use crate::traffic::windivert::WinDivertLayer;
 
 #[derive(Debug, Clone)]

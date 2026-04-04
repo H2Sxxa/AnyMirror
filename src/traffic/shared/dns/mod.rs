@@ -26,7 +26,7 @@ use tokio::{
 };
 
 use crate::config::FakeDnsOptions;
-use crate::rules::types::Rules;
+use crate::rules::pool::Rules;
 use crate::socket::bind_dual_stack_tcp_listener;
 
 pub use fake_ip::FakeIpStore;

@@ -1,6 +1,7 @@
 mod matcher;
 mod parse;
-mod resolve;
+pub(crate) mod pool;
+pub(crate) mod schema;
 #[cfg(test)]
 mod tests;
 pub mod types;

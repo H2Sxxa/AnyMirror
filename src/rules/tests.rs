@@ -1,14 +1,15 @@
 use url::Url;
 
+use crate::rules::pool::Rules;
+use crate::rules::schema::RawRule;
 use crate::rules::types::{
-    HostPattern, HostRuleMatcher, RawRule, Rule, RuleAction, RuleActionKind, RuleKind, RuleMatcher,
-    Rules, UpstreamPlan,
+    HostPattern, HostRuleMatcher, Rule, RuleAction, RuleActionKind, RuleKind, RuleMatcher,
+    UpstreamPlan,
 };
 
 #[test]
 fn rewrites_prefix_rule_from_root_path() {
-    let rules = Rules {
-        entries: vec![Rule {
+    let rules = Rules::new(vec![Rule {
             kind: RuleKind::Prefix,
             matcher: RuleMatcher::PrefixUrl {
                 origin: Url::parse("https://libraries.minecraft.net/").unwrap(),
@@ -21,8 +22,7 @@ fn rewrites_prefix_rule_from_root_path() {
                 connect_ip: None,
                 dns: None,
             }),
-        }],
-    };
+        }]);
 
     let original =
         Url::parse("https://libraries.minecraft.net/com/example/demo/1.0/demo-1.0.jar").unwrap();
@@ -112,8 +112,7 @@ action:
 
 #[test]
 fn structured_host_suffix_rule_matches_dns_hosts() {
-    let rules = Rules {
-        entries: vec![Rule {
+    let rules = Rules::new(vec![Rule {
             kind: RuleKind::HostSuffix,
             matcher: RuleMatcher::Host(HostRuleMatcher {
                 pattern: HostPattern::Suffix("example.com".to_string()),
@@ -129,8 +128,7 @@ fn structured_host_suffix_rule_matches_dns_hosts() {
                 connect_ip: None,
                 dns: None,
             }),
-        }],
-    };
+        }]);
 
     assert!(rules.matches_dns_host("api.example.com"));
     assert!(rules.matches_dns_host("example.com"));

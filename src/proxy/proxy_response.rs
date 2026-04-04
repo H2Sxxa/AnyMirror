@@ -1,6 +1,6 @@
 use axum::{body::Body, http::HeaderName, response::Response};
 
-use crate::rules::types::RuleMatch;
+use crate::rules::pool::RuleMatch;
 
 use super::{headers::is_forwardable_header, responses::rule_kind_name};
 

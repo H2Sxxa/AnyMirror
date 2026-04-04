@@ -4,9 +4,11 @@ use url::Url;
 use super::matcher::{
     normalize_host, normalize_host_suffix, normalize_path_prefix, normalize_scheme,
 };
+use super::pool::Rules;
+use super::schema::{RawDnsPlan, RawRule, RawRuleAction, RawRuleMatcher, RawUpstreamPlan};
 use super::types::{
-    DnsPlan, HostPattern, HostRuleMatcher, RawDnsPlan, RawRule, RawRuleAction, RawRuleMatcher,
-    RawUpstreamPlan, RejectRuleAction, Rule, RuleAction, RuleMatcher, Rules, UpstreamPlan,
+    DnsMode, DnsPlan, HostPattern, HostRuleMatcher, RejectRuleAction, Rule, RuleAction,
+    RuleMatcher, UpstreamPlan,
 };
 
 impl TryFrom<Vec<RawRule>> for Rules {
@@ -17,7 +19,7 @@ impl TryFrom<Vec<RawRule>> for Rules {
         for raw_rule in value {
             entries.push(Rule::try_from(raw_rule)?);
         }
-        Ok(Self { entries })
+        Ok(Self::new(entries))
     }
 }
 
@@ -25,7 +27,15 @@ impl TryFrom<RawRule> for Rule {
     type Error = anyhow::Error;
 
     fn try_from(value: RawRule) -> Result<Self> {
-        Rule::from_structured_rule(value)
+        let matcher = RuleMatcher::try_from(value.matcher)?;
+        let action = RuleAction::try_from(value.action)?;
+        Rule::validate_matcher_action(&matcher, &action)?;
+
+        Ok(Self {
+            kind: matcher.kind(),
+            matcher,
+            action,
+        })
     }
 }
 
@@ -182,18 +192,56 @@ impl TryFrom<RawDnsPlan> for DnsPlan {
         };
 
         match plan.mode {
-            super::types::DnsMode::System => ensure!(
+            DnsMode::System => ensure!(
                 plan.server.is_none(),
                 "dns.server must be omitted when dns.mode=system"
             ),
-            super::types::DnsMode::Udp
-            | super::types::DnsMode::Dot
-            | super::types::DnsMode::Doh => ensure!(
+            DnsMode::Udp | DnsMode::Dot | DnsMode::Doh => ensure!(
                 plan.server.is_some(),
                 "dns.server is required when dns.mode is udp, dot, or doh"
             ),
         }
 
         Ok(plan)
+    }
+}
+
+impl Rule {
+    fn validate_matcher_action(matcher: &RuleMatcher, action: &RuleAction) -> Result<()> {
+        if let (RuleMatcher::PrefixUrl { origin }, RuleAction::Mirror(upstream)) = (matcher, action)
+        {
+            ensure!(
+                origin.query().is_none() && upstream.url.query().is_none(),
+                "prefix rules cannot contain query strings: `{}` -> `{}`",
+                origin,
+                upstream.url
+            );
+        }
+
+        if let (RuleMatcher::Host(host_matcher), RuleAction::Mirror(upstream)) = (matcher, action) {
+            if host_matcher.path_prefix.is_some() {
+                ensure!(
+                    upstream.url.query().is_none(),
+                    "host rules with path_prefix cannot use upstream.url query strings: `{}`",
+                    upstream.url
+                );
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl UpstreamPlan {
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            !(self.connect_host.is_some() && self.connect_ip.is_some()),
+            "upstream.connect_host and upstream.connect_ip are mutually exclusive"
+        );
+        ensure!(
+            !(self.connect_ip.is_some() && self.dns.is_some()),
+            "upstream.dns cannot be used together with upstream.connect_ip"
+        );
+        Ok(())
     }
 }

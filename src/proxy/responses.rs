@@ -6,7 +6,8 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tokio::signal;
 
-use crate::rules::types::{RuleActionKind, RuleKind, RuleMatch};
+use crate::rules::pool::RuleMatch;
+use crate::rules::types::{RuleActionKind, RuleKind};
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct RewriteQuery {
