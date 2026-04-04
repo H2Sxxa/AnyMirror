@@ -1,4 +1,3 @@
-use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -7,6 +6,7 @@ use tokio::net::TcpListener;
 use tokio::spawn;
 
 use crate::config::AppConfig;
+use crate::socket::bind_dual_stack_tcp_listener;
 use crate::traffic::shared::FakeDnsServer;
 use crate::traffic::windivert::run_transparent_windivert_runtimes;
 
@@ -33,11 +33,7 @@ pub async fn serve_transparent(config: AppConfig) -> Result<()> {
     let fake_dns_server = FakeDnsServer::start(config.backend.dns.clone(), &config.rules).await?;
     let state = build_state(config.clone())?;
     let proxy_redirect_addr = state.listen_addr;
-    let http_listener = TcpListener::bind(SocketAddr::new(
-        IpAddr::V6(Ipv6Addr::UNSPECIFIED),
-        proxy_redirect_addr.port(),
-    ))
-    .await?;
+    let http_listener = bind_dual_stack_tcp_listener(proxy_redirect_addr.port(), 1024)?;
     let app = build_common_router::<HyperExecutor>()
         .fallback(transparent_entry)
         .with_state(state.clone());
@@ -47,8 +43,7 @@ pub async fn serve_transparent(config: AppConfig) -> Result<()> {
     let tls_port = config
         .tls_port
         .unwrap_or_else(|| proxy_redirect_addr.port() + 1);
-    let tls_listener =
-        TcpListener::bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), tls_port)).await?;
+    let tls_listener = bind_dual_stack_tcp_listener(tls_port, 1024)?;
 
     let app_for_tls = app.clone();
     spawn(async move {

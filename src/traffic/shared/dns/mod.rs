@@ -1,7 +1,7 @@
 mod fake_ip;
 
 use std::{
-    net::{IpAddr, Ipv6Addr, SocketAddr},
+    net::{IpAddr, SocketAddr},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -21,12 +21,13 @@ use hickory_server::{
     server::{Request, RequestHandler, ResponseHandler, ResponseInfo, ServerFuture},
 };
 use tokio::{
-    net::{TcpListener, UdpSocket},
+    net::UdpSocket,
     spawn,
 };
 
 use crate::config::FakeDnsOptions;
 use crate::rules::types::Rules;
+use crate::socket::bind_dual_stack_tcp_listener;
 
 pub use fake_ip::FakeIpStore;
 
@@ -111,10 +112,8 @@ impl FakeDnsServer {
             )
         })?;
         let port = self.state.options.listen_addr.port();
-        let tcp_listener =
-            TcpListener::bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port))
-                .await
-                .with_context(|| format!("failed to bind fake DNS TCP server on [::]:{}", port))?;
+        let tcp_listener = bind_dual_stack_tcp_listener(port, 1024)
+            .with_context(|| format!("failed to bind fake DNS TCP server on [::]:{}", port))?;
         let tcp_addr = tcp_listener
             .local_addr()
             .context("failed to read fake DNS TCP listener address")?;

@@ -25,6 +25,7 @@ rustls-pemfile = "2.2.0"
 rustls-pki-types = "1.14.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = { version = "0.9", default-features = false }
+socket2 = "0.5.10"
 tokio = { version = "1.45", features = ["macros", "rt-multi-thread", "signal", "sync"] }
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring"] }
 tower = { version = "0.5.3", features = ["util"] }

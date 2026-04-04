@@ -1,6 +1,7 @@
 mod config;
 mod proxy;
 mod rules;
+mod socket;
 mod traffic;
 
 use std::path::PathBuf;

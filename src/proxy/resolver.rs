@@ -103,7 +103,13 @@ impl CustomResolver {
         let lookup = system_resolver
             .lookup_ip(bootstrap_host)
             .await
-            .map_err(|error| anyhow!("Failed to resolve DoT server host {}: {}", bootstrap_host, error))?;
+            .map_err(|error| {
+                anyhow!(
+                    "Failed to resolve DoT server host {}: {}",
+                    bootstrap_host,
+                    error
+                )
+            })?;
 
         let ips = lookup.iter().collect::<Vec<IpAddr>>();
         if ips.is_empty() {
@@ -196,7 +202,10 @@ fn normalize_dot_server_name(server: &str) -> String {
 }
 
 fn dot_bootstrap_host(server: &str) -> Result<&str> {
-    let trimmed = server.trim().trim_start_matches("tls://").trim_end_matches('/');
+    let trimmed = server
+        .trim()
+        .trim_start_matches("tls://")
+        .trim_end_matches('/');
     let host = trimmed.split(':').next().unwrap_or(trimmed);
     if host.is_empty() {
         return Err(anyhow!("Invalid DoT server address {}", server));
@@ -205,7 +214,10 @@ fn dot_bootstrap_host(server: &str) -> Result<&str> {
 }
 
 fn dot_server_port(server: &str) -> Option<u16> {
-    let trimmed = server.trim().trim_start_matches("tls://").trim_end_matches('/');
+    let trimmed = server
+        .trim()
+        .trim_start_matches("tls://")
+        .trim_end_matches('/');
     let (_, port) = trimmed.rsplit_once(':')?;
     port.parse().ok()
 }
