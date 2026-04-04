@@ -127,7 +127,6 @@ impl CustomResolver {
     }
 
     /// Create a DoH (DNS-over-HTTPS) resolver
-    #[allow(dead_code)]
     async fn doh(server: &str) -> Result<Self> {
         let server_url = if server.starts_with("http") {
             server.to_string()

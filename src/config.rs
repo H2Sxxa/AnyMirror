@@ -49,9 +49,6 @@ struct RawConfig {
     backend: RawBackendOptions,
     #[serde(default, alias = "rules")]
     includes: Vec<RawRule>,
-    #[allow(dead_code)]
-    #[serde(default)]
-    classes: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]

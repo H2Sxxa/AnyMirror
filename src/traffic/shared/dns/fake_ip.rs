@@ -115,7 +115,6 @@ impl FakeIpStore {
         Ok(fake_ip)
     }
 
-    #[allow(dead_code)]
     pub fn resolve_domain(&self, ip: IpAddr, now: Instant) -> Option<String> {
         let mut inner = self.inner.lock().ok()?;
         prune_expired_entries(&mut inner, now);
