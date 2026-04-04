@@ -9,6 +9,25 @@ pub(super) fn build_proxy_response(
     matched: RuleMatch<'_>,
     source: Option<&str>,
 ) -> Response {
+    let target = matched.upstream.url.to_string();
+    let rule_kind = rule_kind_name(matched);
+    build_upstream_response(upstream, source, Some(&target), Some(rule_kind))
+}
+
+pub(super) fn build_passthrough_response(
+    upstream: hyper::Response<hyper::body::Incoming>,
+    source: Option<&str>,
+    target: &str,
+) -> Response {
+    build_upstream_response(upstream, source, Some(target), None)
+}
+
+fn build_upstream_response(
+    upstream: hyper::Response<hyper::body::Incoming>,
+    source: Option<&str>,
+    target: Option<&str>,
+    rule_kind: Option<&str>,
+) -> Response {
     let status = upstream.status();
     let mut response = Response::builder().status(status);
     let response_headers = response.headers_mut().expect("response builder is valid");
@@ -25,21 +44,20 @@ pub(super) fn build_proxy_response(
             source.parse().expect("static header value is valid"),
         );
     }
-    response_headers.insert(
-        HeaderName::from_static("x-anymirror-target"),
-        matched
-            .upstream
-            .url
-            .as_str()
-            .parse()
-            .unwrap_or_else(|_| "unavailable".parse().expect("fallback header is valid")),
-    );
-    response_headers.insert(
-        HeaderName::from_static("x-anymirror-rule-kind"),
-        rule_kind_name(matched)
-            .parse()
-            .expect("static header value is valid"),
-    );
+    if let Some(target) = target {
+        response_headers.insert(
+            HeaderName::from_static("x-anymirror-target"),
+            target
+                .parse()
+                .unwrap_or_else(|_| "unavailable".parse().expect("fallback header is valid")),
+        );
+    }
+    if let Some(rule_kind) = rule_kind {
+        response_headers.insert(
+            HeaderName::from_static("x-anymirror-rule-kind"),
+            rule_kind.parse().expect("static header value is valid"),
+        );
+    }
 
     // Convert hyper's Incoming body to axum's Body
     response

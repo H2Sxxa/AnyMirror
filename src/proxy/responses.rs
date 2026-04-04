@@ -1,8 +1,10 @@
 use axum::{
+    http::StatusCode,
     response::{IntoResponse, Response},
     Json,
 };
 use serde::{Deserialize, Serialize};
+use tokio::signal;
 
 use crate::rules::{RuleKind, RuleMatch};
 
@@ -23,7 +25,7 @@ struct ErrorResponse {
     error: String,
 }
 
-pub(crate) fn json_error(status: axum::http::StatusCode, message: impl Into<String>) -> Response {
+pub(crate) fn json_error(status: StatusCode, message: impl Into<String>) -> Response {
     (
         status,
         Json(ErrorResponse {
@@ -41,5 +43,5 @@ pub(crate) fn rule_kind_name(matched: RuleMatch<'_>) -> &'static str {
 }
 
 pub(crate) async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+    let _ = signal::ctrl_c().await;
 }

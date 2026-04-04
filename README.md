@@ -77,8 +77,12 @@ Create a `config.yml` file with your redirection rules:
 ```yaml
 listen: 127.0.0.1:8787
 # tls_port: 8788  # Optional: customize HTTPS proxy port (default: listen_port + 1)
-windivert:
-  hot_reload: false # Optional: keep request filters targeted and hot-swap request generations as DNS target IPs change
+shared:
+  dns:
+    listen: 127.0.0.1:15353     # Local fake-ip DNS server; 5353 is commonly occupied by mDNS on Windows
+    fake_ipv4_range: 198.18.0.0/16
+    fake_ipv6_range: fd00:198:18::/48
+    record_ttl_secs: 60
 
 includes:
   # Prefix matching (default for URLs ending with /)
@@ -115,7 +119,10 @@ includes:
 
 - **listen:** Server address and port to bind to (e.g., `127.0.0.1:8787`)
 - **tls_port** (optional): Custom HTTPS proxy port. If not specified, defaults to `listen_port + 1`. For example, if `listen` is `127.0.0.1:8787`, the HTTPS port will be `8788` unless overridden here.
-- **windivert.hot_reload** (optional): Enables targeted WinDivert request filters backed by a DNS-driven target store. When the active target IP set changes, anymirror hot-swaps the request capture generation after a grace period instead of widening one long-lived handle forever.
+- **shared.dns.listen**: Local fake-ip DNS server address. Transparent fake-ip mode expects your system or application DNS to query this address.
+- **shared.dns.fake_ipv4_range**: IPv4 fake-ip pool used for transparent redirection. WinDivert only intercepts TCP connections whose destination falls inside this range.
+- **shared.dns.fake_ipv6_range**: IPv6 fake-ip pool used for transparent redirection. WinDivert also intercepts TCP connections whose destination falls inside this range.
+- **shared.dns.record_ttl_secs**: TTL used for generated fake A and AAAA records.
 - **includes:** List of URL redirection rules (see Rule Matching Modes below)
 
 ### Rule Matching Modes

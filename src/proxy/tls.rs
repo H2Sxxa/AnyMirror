@@ -7,11 +7,11 @@ use hyper_util::{
 };
 use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair, KeyUsagePurpose};
 use rustls::crypto::ring::sign::any_supported_type;
-use std::net::SocketAddr;
 use std::sync::Mutex;
 use std::{collections::HashMap, io::Cursor};
 use std::{fs, path::Path, sync::Arc};
 use tokio::net::TcpListener;
+use tokio::spawn;
 use tokio_rustls::rustls::{
     server::{ClientHello, ResolvesServerCert},
     sign::CertifiedKey,
@@ -114,7 +114,7 @@ impl ResolvesServerCert for DynamicCertResolver {
     }
 }
 
-pub async fn serve_app_tls(app: Router, listen_addr: SocketAddr) -> Result<()> {
+pub async fn serve_app_tls_with_listener(app: Router, listener: TcpListener) -> Result<()> {
     // Generate or load CA certificate
     let (ca_cert_pem, ca_key_pem) = get_or_generate_ca_cert()?;
 
@@ -134,7 +134,9 @@ pub async fn serve_app_tls(app: Router, listen_addr: SocketAddr) -> Result<()> {
         req
     }));
 
-    let listener = TcpListener::bind(listen_addr).await?;
+    let listen_addr = listener
+        .local_addr()
+        .context("failed to read TLS listen address")?;
     tracing::info!(
         "TLS interception server listening on {} (dynamic certificate mode)",
         listen_addr
@@ -153,7 +155,7 @@ pub async fn serve_app_tls(app: Router, listen_addr: SocketAddr) -> Result<()> {
         let acceptor = acceptor.clone();
         let app = app.clone();
 
-        tokio::spawn(async move {
+        spawn(async move {
             let tls_stream = match acceptor.accept(tcp).await {
                 Ok(s) => s,
                 Err(e) => {

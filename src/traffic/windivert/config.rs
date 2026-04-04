@@ -1,26 +1,29 @@
 use std::{
-    collections::HashSet,
     env,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     path::{Path, PathBuf},
 };
 
 use anyhow::{bail, ensure, Context, Result};
+use ipnet::{Ipv4Net, Ipv6Net};
 
 #[cfg(target_os = "windows")]
-use windivert::prelude::WinDivertFlags;
+use windivert::prelude::{WinDivertFlags, WinDivertParam};
 
-use super::state::{
+use crate::traffic::shared::dns::FakeDnsServer;
+use crate::traffic::shared::nat::{
     new_transparent_nat_table_v4, new_transparent_nat_table_v6, TransparentNatTableV4,
-    TransparentNatTableV6, TransparentTargetChangeTx, TransparentTargetStore,
+    TransparentNatTableV6,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum TransparentCaptureKind {
     TcpRequestRedirect,
+    TcpDnsRedirect,
     TcpProxyResponse,
-    DnsSniffer,
+    DnsResponder,
+    UdpQuicDrop,
     Generic,
 }
 
@@ -44,12 +47,13 @@ pub struct WinDivertConfig {
     pub queue_size: u64,
     pub capture_loopback: bool,
     pub sniff: bool,
+    pub fake_ipv4_range: Ipv4Net,
+    pub fake_ipv6_range: Ipv6Net,
+    pub local_dns_port: u16,
     pub capture_kind: TransparentCaptureKind,
-    pub transparent_hosts: HashSet<String>,
-    pub transparent_target_store: TransparentTargetStore,
+    pub fake_dns_server: Option<FakeDnsServer>,
     pub transparent_nat_table_v4: TransparentNatTableV4,
     pub transparent_nat_table_v6: TransparentNatTableV6,
-    pub target_change_tx: Option<TransparentTargetChangeTx>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +103,12 @@ impl Default for WinDivertConfig {
     fn default() -> Self {
         let local_proxy_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8787);
         let tls_port = 8788;
+        let local_dns_port = 15353;
+        let fake_ipv4_range = Ipv4Net::new(Ipv4Addr::new(198, 18, 0, 0), 16)
+            .expect("default fake-ip range should be valid");
+        let fake_ipv6_range =
+            Ipv6Net::new(Ipv6Addr::new(0xfd00, 0x0198, 0x0018, 0, 0, 0, 0, 0), 48)
+                .expect("default IPv6 fake-ip range should be valid");
         // Note: filter will be properly set when config is actually used
         let filter = format!(
             "outbound and tcp and ( (tcp.DstPort != {} and tcp.DstPort != {} and !loopback) or tcp.SrcPort == {} or tcp.SrcPort == {} )",
@@ -119,15 +129,13 @@ impl Default for WinDivertConfig {
             queue_size: 4 * 1024 * 1024,
             capture_loopback: false,
             sniff: true,
+            fake_ipv4_range,
+            fake_ipv6_range,
+            local_dns_port,
             capture_kind: TransparentCaptureKind::Generic,
-            transparent_hosts: HashSet::new(),
-            transparent_target_store: TransparentTargetStore::from_bootstrap(
-                std::iter::empty::<IpAddr>(),
-                std::time::Instant::now(),
-            ),
+            fake_dns_server: None,
             transparent_nat_table_v4: new_transparent_nat_table_v4(),
             transparent_nat_table_v6: new_transparent_nat_table_v6(),
-            target_change_tx: None,
         }
     }
 }
@@ -264,20 +272,11 @@ impl WindowsBackendPlan {
         }
     }
 
-    pub fn param_updates(&self) -> [(windivert::prelude::WinDivertParam, u64); 3] {
+    pub fn param_updates(&self) -> [(WinDivertParam, u64); 3] {
         [
-            (
-                windivert::prelude::WinDivertParam::QueueLength,
-                self.queue_len as u64,
-            ),
-            (
-                windivert::prelude::WinDivertParam::QueueTime,
-                self.queue_time_ms as u64,
-            ),
-            (
-                windivert::prelude::WinDivertParam::QueueSize,
-                self.queue_size,
-            ),
+            (WinDivertParam::QueueLength, self.queue_len as u64),
+            (WinDivertParam::QueueTime, self.queue_time_ms as u64),
+            (WinDivertParam::QueueSize, self.queue_size),
         ]
     }
 }

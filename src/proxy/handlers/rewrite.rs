@@ -1,5 +1,6 @@
 use axum::{
     extract::{Query, State},
+    http::StatusCode,
     response::{IntoResponse, Response},
     Json,
 };
@@ -27,6 +28,6 @@ pub(crate) async fn rewrite_url<E: UpstreamExecutor>(
             kind: rule_kind_name(matched),
         })
         .into_response(),
-        None => json_error(axum::http::StatusCode::NOT_FOUND, "no matching mirror rule"),
+        None => json_error(StatusCode::NOT_FOUND, "no matching mirror rule"),
     }
 }

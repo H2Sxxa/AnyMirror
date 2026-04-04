@@ -24,7 +24,7 @@ pub enum CaptureLayer {
     NetworkForward,
 }
 
-impl From<CaptureLayer> for traffic::windivert::WinDivertLayer {
+impl From<CaptureLayer> for WinDivertLayer {
     fn from(layer: CaptureLayer) -> Self {
         match layer {
             CaptureLayer::Network => WinDivertLayer::Network,

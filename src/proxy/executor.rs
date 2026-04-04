@@ -7,6 +7,7 @@ use axum::http::{header::HOST, HeaderMap, Method, Request};
 // use hyper::body::Bytes;
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpStream;
+use tokio::spawn;
 use tokio_rustls::rustls;
 use tokio_rustls::TlsConnector;
 
@@ -109,7 +110,9 @@ impl UpstreamExecutor for HyperExecutor {
                 }
             }
 
-            req_headers.insert("x-anymirror-original-url", original_url.parse()?);
+            if upstream.url.as_str() != original_url {
+                req_headers.insert("x-anymirror-original-url", original_url.parse()?);
+            }
 
             let req = req.body(body)?;
 
@@ -128,7 +131,7 @@ impl UpstreamExecutor for HyperExecutor {
                 let io = TokioIo::new(tls_stream);
 
                 let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
-                tokio::spawn(async move {
+                spawn(async move {
                     if let Err(e) = conn.await {
                         tracing::debug!("https connection failed: {:?}", e);
                     }
@@ -137,7 +140,7 @@ impl UpstreamExecutor for HyperExecutor {
             } else {
                 let io = TokioIo::new(tcp);
                 let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
-                tokio::spawn(async move {
+                spawn(async move {
                     if let Err(e) = conn.await {
                         tracing::debug!("http connection failed: {:?}", e);
                     }

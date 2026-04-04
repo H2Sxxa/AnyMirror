@@ -1,9 +1,11 @@
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 
 use anyhow::{anyhow, Result};
 use hickory_resolver::config::{NameServerConfigGroup, ResolverConfig, ResolverOpts};
+use hickory_resolver::name_server::TokioConnectionProvider;
 use hickory_resolver::TokioResolver;
+use url::Url;
 
 use crate::rules::{DnsMode, DnsPlan};
 
@@ -53,7 +55,7 @@ impl CustomResolver {
 
     /// Create a UDP DNS resolver (Standard DNS)
     fn udp(server: &str) -> Result<Self> {
-        let socket_addr: std::net::SocketAddr = if server.contains(':') {
+        let socket_addr: SocketAddr = if server.contains(':') {
             server
                 .parse()
                 .map_err(|error| anyhow!("Invalid DNS server address {}: {}", server, error))?
@@ -66,12 +68,10 @@ impl CustomResolver {
         let group =
             NameServerConfigGroup::from_ips_clear(&[socket_addr.ip()], socket_addr.port(), true);
         let config = ResolverConfig::from_parts(None, vec![], group);
-        let resolver = TokioResolver::builder_with_config(
-            config,
-            hickory_resolver::name_server::TokioConnectionProvider::default(),
-        )
-        .with_options(ResolverOpts::default())
-        .build();
+        let resolver =
+            TokioResolver::builder_with_config(config, TokioConnectionProvider::default())
+                .with_options(ResolverOpts::default())
+                .build();
 
         Ok(Self { resolver })
     }
@@ -84,7 +84,7 @@ impl CustomResolver {
         } else {
             format!("https://{}/dns-query", server)
         };
-        let url = url::Url::parse(&server_url)
+        let url = Url::parse(&server_url)
             .map_err(|error| anyhow!("Invalid DoH server URL {}: {}", server, error))?;
 
         let host = url
@@ -113,12 +113,10 @@ impl CustomResolver {
 
         let group = NameServerConfigGroup::from_ips_https(&ips, port, host.to_string(), true);
         let config = ResolverConfig::from_parts(None, vec![], group);
-        let resolver = TokioResolver::builder_with_config(
-            config,
-            hickory_resolver::name_server::TokioConnectionProvider::default(),
-        )
-        .with_options(ResolverOpts::default())
-        .build();
+        let resolver =
+            TokioResolver::builder_with_config(config, TokioConnectionProvider::default())
+                .with_options(ResolverOpts::default())
+                .build();
 
         Ok(Self { resolver })
     }
@@ -144,7 +142,7 @@ impl CustomResolver {
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
+    use std::{net::IpAddr, str::FromStr};
 
     use super::CustomResolver;
 
@@ -152,6 +150,6 @@ mod tests {
     async fn test_resolve_ip_string() {
         let resolver = CustomResolver::system().unwrap();
         let result = resolver.resolve("127.0.0.1").await.unwrap();
-        assert_eq!(result, std::net::IpAddr::from_str("127.0.0.1").unwrap());
+        assert_eq!(result, IpAddr::from_str("127.0.0.1").unwrap());
     }
 }

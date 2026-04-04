@@ -8,7 +8,7 @@ use axum::{
 
 use super::super::{
     executor::UpstreamExecutor,
-    forwarding::forward_request,
+    forwarding::forward_transparent_request,
     request_parser::{ensure_supported_method, resolve_transparent_target, ORIGINAL_SCHEME_HEADER},
     responses::json_error,
     state::AppState,
@@ -46,13 +46,12 @@ pub(crate) async fn transparent_entry<E: UpstreamExecutor>(
         Err(response) => return response,
     };
 
-    forward_request(
+    forward_transparent_request(
         &state,
         request.method().clone(),
         &headers, // use our customized headers
         request.into_body(),
         original,
-        Some("transparent"),
     )
     .await
 }

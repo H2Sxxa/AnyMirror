@@ -1,6 +1,7 @@
-use std::{fs, net::SocketAddr, path::Path};
+use std::{fs, net::SocketAddr, path::Path, time::Duration};
 
 use anyhow::{bail, Context, Result};
+use ipnet::{Ipv4Net, Ipv6Net};
 use serde::Deserialize;
 
 use crate::rules::Rules;
@@ -9,13 +10,21 @@ use crate::rules::Rules;
 pub struct AppConfig {
     pub listen_addr: SocketAddr,
     pub tls_port: Option<u16>,
-    pub windivert: WinDivertOptions,
+    pub shared: SharedOptions,
     pub rules: Rules,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct WinDivertOptions {
-    pub hot_reload: bool,
+#[derive(Debug, Clone)]
+pub struct SharedOptions {
+    pub dns: FakeDnsOptions,
+}
+
+#[derive(Debug, Clone)]
+pub struct FakeDnsOptions {
+    pub listen_addr: SocketAddr,
+    pub fake_ipv4_range: Ipv4Net,
+    pub fake_ipv6_range: Ipv6Net,
+    pub record_ttl: Duration,
 }
 
 #[derive(Debug, Deserialize)]
@@ -24,7 +33,7 @@ struct RawConfig {
     listen: String,
     tls_port: Option<u16>,
     #[serde(default)]
-    windivert: RawWinDivertOptions,
+    shared: RawSharedOptions,
     #[serde(default, alias = "rules")]
     includes: Vec<crate::rules::RawRule>,
     #[allow(dead_code)]
@@ -33,9 +42,32 @@ struct RawConfig {
 }
 
 #[derive(Debug, Deserialize, Default)]
-struct RawWinDivertOptions {
+struct RawSharedOptions {
     #[serde(default)]
-    hot_reload: bool,
+    dns: RawFakeDnsOptions,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawFakeDnsOptions {
+    #[serde(default = "default_shared_dns_listen_addr")]
+    listen: String,
+    #[serde(default = "default_fake_ipv4_range")]
+    fake_ipv4_range: String,
+    #[serde(default = "default_fake_ipv6_range")]
+    fake_ipv6_range: String,
+    #[serde(default = "default_fake_ip_record_ttl_secs")]
+    record_ttl_secs: u64,
+}
+
+impl Default for RawFakeDnsOptions {
+    fn default() -> Self {
+        Self {
+            listen: default_shared_dns_listen_addr(),
+            fake_ipv4_range: default_fake_ipv4_range(),
+            fake_ipv6_range: default_fake_ipv6_range(),
+            record_ttl_secs: default_fake_ip_record_ttl_secs(),
+        }
+    }
 }
 
 pub fn load_config(path: impl AsRef<Path>) -> Result<AppConfig> {
@@ -58,7 +90,7 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<AppConfig> {
     Ok(AppConfig {
         listen_addr,
         tls_port: parsed.tls_port,
-        windivert: WinDivertOptions::from(parsed.windivert),
+        shared: SharedOptions::try_from(parsed.shared)?,
         rules,
     })
 }
@@ -67,10 +99,58 @@ fn default_listen_addr() -> String {
     "127.0.0.1:8787".to_string()
 }
 
-impl From<RawWinDivertOptions> for WinDivertOptions {
-    fn from(value: RawWinDivertOptions) -> Self {
-        Self {
-            hot_reload: value.hot_reload,
-        }
+impl TryFrom<RawSharedOptions> for SharedOptions {
+    type Error = anyhow::Error;
+
+    fn try_from(value: RawSharedOptions) -> Result<Self> {
+        Ok(Self {
+            dns: FakeDnsOptions::try_from(value.dns)?,
+        })
     }
+}
+
+impl TryFrom<RawFakeDnsOptions> for FakeDnsOptions {
+    type Error = anyhow::Error;
+
+    fn try_from(value: RawFakeDnsOptions) -> Result<Self> {
+        let listen_addr = value
+            .listen
+            .parse()
+            .with_context(|| format!("invalid shared.dns.listen `{}`", value.listen))?;
+        let fake_ipv4_range = value.fake_ipv4_range.parse::<Ipv4Net>().with_context(|| {
+            format!(
+                "invalid shared.dns.fake_ipv4_range `{}`",
+                value.fake_ipv4_range
+            )
+        })?;
+        let fake_ipv6_range = value.fake_ipv6_range.parse::<Ipv6Net>().with_context(|| {
+            format!(
+                "invalid shared.dns.fake_ipv6_range `{}`",
+                value.fake_ipv6_range
+            )
+        })?;
+
+        Ok(Self {
+            listen_addr,
+            fake_ipv4_range,
+            fake_ipv6_range,
+            record_ttl: Duration::from_secs(value.record_ttl_secs),
+        })
+    }
+}
+
+fn default_shared_dns_listen_addr() -> String {
+    "127.0.0.1:15353".to_string()
+}
+
+fn default_fake_ipv4_range() -> String {
+    "198.18.0.0/16".to_string()
+}
+
+fn default_fake_ipv6_range() -> String {
+    "fd00:198:18::/48".to_string()
+}
+
+fn default_fake_ip_record_ttl_secs() -> u64 {
+    60
 }
