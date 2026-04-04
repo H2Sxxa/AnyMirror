@@ -139,6 +139,7 @@ where
         TransparentCaptureKind::TcpRequestRedirect => handle_request_packet(
             data,
             address,
+            fake_dns_server,
             fake_ipv4_range,
             fake_ipv6_range,
             nat_table_v4,
@@ -319,10 +320,13 @@ where
     let dst_ip = F::read_dst_ip(data)?;
     let domain =
         fake_dns_server.and_then(|runtime| runtime.resolve_fake_domain(F::to_ip_addr(dst_ip), now));
+    let Some(domain) = domain else {
+        return Some(PacketDisposition::Pass);
+    };
     tracing::info!(
         ip_family = F::LABEL,
         fake_destination_ip = %dst_ip,
-        domain = domain.as_deref().unwrap_or("unknown"),
+        domain = %domain,
         "Dropping fake-ip QUIC packet to force TCP/TLS fallback"
     );
     Some(PacketDisposition::Drop)
@@ -331,6 +335,7 @@ where
 fn handle_request_packet<A>(
     data: &mut [u8],
     address: &mut A,
+    fake_dns_server: Option<&FakeDnsServer>,
     fake_ipv4_range: Ipv4Net,
     fake_ipv6_range: Ipv6Net,
     nat_table_v4: &TransparentNatTableV4,
@@ -345,6 +350,7 @@ where
         return handle_request_packet_impl::<A, Ipv4PacketFamily>(
             data,
             address,
+            fake_dns_server,
             ip_header_len,
             fake_ipv4_range,
             nat_table_v4,
@@ -357,6 +363,7 @@ where
         return handle_request_packet_impl::<A, Ipv6PacketFamily>(
             data,
             address,
+            fake_dns_server,
             ip_header_len,
             fake_ipv6_range,
             nat_table_v6,
@@ -410,6 +417,7 @@ where
 fn handle_request_packet_impl<A, F>(
     data: &mut [u8],
     address: &mut A,
+    fake_dns_server: Option<&FakeDnsServer>,
     ip_header_len: usize,
     capture_range: F::Range,
     nat_table: &<F as FamilyNatOps>::NatTable,
@@ -436,11 +444,17 @@ where
     if dst_port == proxy_port || dst_port == tls_port || !F::contains(capture_range, &dst_ip) {
         return PacketDisposition::Pass;
     }
+    let now = Instant::now();
+    let Some(owned_domain) =
+        fake_dns_server.and_then(|server| server.resolve_fake_domain(F::to_ip_addr(dst_ip), now))
+    else {
+        return PacketDisposition::Pass;
+    };
 
     let Some((tcp_header_len, syn, is_closing)) = tcp_details(data, ip_header_len) else {
         return PacketDisposition::Pass;
     };
-    let expires_at = nat_expiration(Instant::now(), is_closing);
+    let expires_at = nat_expiration(now, is_closing);
     if !F::upsert_nat(nat_table, src_ip, src_port, dst_ip, dst_port, expires_at) {
         tracing::error!(
             ip_family = F::LABEL,
@@ -466,15 +480,26 @@ where
     }
 
     address.set_outbound_flag(false);
-    if syn || !host_info.is_empty() {
+    if !host_info.is_empty() {
         tracing::info!(
             ip_family = F::LABEL,
             client_port = src_port,
             fake_destination_ip = %dst_ip,
+            domain = %owned_domain,
             destination_port = dst_port,
             target_proxy_port,
             host = host_info,
             "Intercepted fake-ip request and redirected it to the local proxy"
+        );
+    } else if syn {
+        tracing::trace!(
+            ip_family = F::LABEL,
+            client_port = src_port,
+            fake_destination_ip = %dst_ip,
+            domain = %owned_domain,
+            destination_port = dst_port,
+            target_proxy_port,
+            "Intercepted fake-ip TCP SYN and redirected it to the local proxy"
         );
     }
 

@@ -1,5 +1,6 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::sync::{Arc, RwLock};
 
 use url::Url;
 
@@ -13,6 +14,11 @@ use super::types::{
 pub struct Rules {
     entries: Vec<Rule>,
     pool: RulePool,
+}
+
+#[derive(Debug, Clone)]
+pub struct LiveRules {
+    inner: Arc<RwLock<Arc<Rules>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -82,6 +88,32 @@ impl Rules {
     }
 }
 
+impl LiveRules {
+    pub fn new(rules: Rules) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(Arc::new(rules))),
+        }
+    }
+
+    pub fn snapshot(&self) -> Arc<Rules> {
+        self.inner
+            .read()
+            .expect("live rules read lock poisoned")
+            .clone()
+    }
+
+    pub fn replace(&self, rules: Rules) -> usize {
+        let rule_count = rules.len();
+        let mut guard = self.inner.write().expect("live rules write lock poisoned");
+        *guard = Arc::new(rules);
+        rule_count
+    }
+
+    pub fn matches_dns_host(&self, host: &str) -> bool {
+        self.snapshot().matches_dns_host(host)
+    }
+}
+
 impl RuleMatch<'_> {
     pub fn action_kind(&self) -> RuleActionKind {
         self.action.kind()
@@ -125,9 +157,9 @@ impl Rule {
         self.matcher
             .resolve(original)
             .map(|path_suffix| match &self.action {
-                RuleAction::Mirror(upstream) => {
-                    ResolvedRuleAction::Mirror(resolve_mirror_upstream(upstream, original, path_suffix))
-                }
+                RuleAction::Mirror(upstream) => ResolvedRuleAction::Mirror(
+                    resolve_mirror_upstream(upstream, original, path_suffix),
+                ),
                 RuleAction::Direct => ResolvedRuleAction::Direct(UpstreamPlan::direct(original)),
                 RuleAction::Reject(reject) => ResolvedRuleAction::Reject(reject.clone()),
             })
@@ -344,7 +376,10 @@ impl RulePool {
             candidates.extend(indices.iter().copied());
         }
 
-        if let Some(host) = original.host_str().and_then(|host| normalize_host(host).ok()) {
+        if let Some(host) = original
+            .host_str()
+            .and_then(|host| normalize_host(host).ok())
+        {
             if let Some(indices) = self.exact_hosts.get(&host) {
                 candidates.extend(indices.iter().copied());
             }
@@ -358,7 +393,8 @@ impl RulePool {
 
         candidates.into_iter().find_map(|index| {
             let rule = &entries[index];
-            rule.resolve(original).map(|action| RuleMatch { action, rule })
+            rule.resolve(original)
+                .map(|action| RuleMatch { action, rule })
         })
     }
 

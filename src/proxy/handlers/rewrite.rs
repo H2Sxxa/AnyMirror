@@ -21,7 +21,8 @@ pub(crate) async fn rewrite_url<E: UpstreamExecutor>(
         Err(response) => return response,
     };
 
-    match state.rules.resolve(&original) {
+    let rules = state.rules.snapshot();
+    match rules.resolve(&original) {
         Some(matched) => Json(RewriteResponse {
             original: original.to_string(),
             rewritten: matched.upstream().map(|upstream| upstream.url.to_string()),

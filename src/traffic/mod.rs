@@ -11,6 +11,7 @@ pub mod windivert {
 
     use crate::config::AppConfig;
     use crate::traffic::shared::FakeDnsServer;
+    use crate::workers::Workers;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum WinDivertLayer {
@@ -22,6 +23,7 @@ pub mod windivert {
         _config: &AppConfig,
         _fake_dns_server: FakeDnsServer,
         _proxy_redirect_addr: SocketAddr,
+        _workers: Workers,
     ) -> Result<()> {
         bail!("WinDivert transparent mode is only supported on Windows")
     }

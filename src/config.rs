@@ -21,18 +21,18 @@ pub struct AppConfig {
     pub rules: Rules,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendOptions {
     pub dns: FakeDnsOptions,
     pub windivert: WinDivertBackendOptions,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WinDivertBackendOptions {
     pub layer: WinDivertLayer,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FakeDnsOptions {
     pub listen_addr: SocketAddr,
     pub fake_ipv4_range: Ipv4Net,

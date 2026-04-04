@@ -6,7 +6,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tokio::{spawn, time};
+use tokio::time;
+
+use crate::workers::Workers;
 
 pub const NAT_ENTRY_ESTABLISHED_TTL: Duration = Duration::from_secs(300);
 pub const NAT_ENTRY_CLOSING_TTL: Duration = Duration::from_secs(30);
@@ -35,8 +37,9 @@ where
 pub fn spawn_nat_cleanup_task(
     nat_table_v4: TransparentNatTableV4,
     nat_table_v6: TransparentNatTableV6,
+    workers: Workers,
 ) {
-    spawn(async move {
+    workers.spawn("transparent-nat-cleanup", async move {
         let mut interval = time::interval(NAT_TABLE_CLEANUP_INTERVAL);
         loop {
             interval.tick().await;

@@ -21,7 +21,8 @@ pub(crate) async fn forward_request<E: UpstreamExecutor>(
     original: Url,
     source: Option<&str>,
 ) -> Response {
-    let matched = match state.rules.resolve(&original) {
+    let rules = state.rules.snapshot();
+    let matched = match rules.resolve(&original) {
         Some(matched) => matched,
         None => return json_error(StatusCode::NOT_FOUND, "no matching mirror rule"),
     };
@@ -75,7 +76,8 @@ pub(crate) async fn forward_transparent_request<E: UpstreamExecutor>(
     body: Body,
     original: Url,
 ) -> Response {
-    let matched = state.rules.resolve(&original);
+    let rules = state.rules.snapshot();
+    let matched = rules.resolve(&original);
     match matched {
         Some(matched) => {
             let message = match matched.action_kind() {

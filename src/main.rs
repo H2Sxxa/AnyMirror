@@ -3,6 +3,8 @@ mod proxy;
 mod rules;
 mod socket;
 mod traffic;
+mod watch;
+mod workers;
 
 use std::path::PathBuf;
 
@@ -26,6 +28,10 @@ pub struct Cli {
     /// Path to the configuration file
     #[arg(short = 'c', long = "config", default_value = "config.yml")]
     pub config: PathBuf,
+
+    /// Watch the config file and hot reload rules when it changes
+    #[arg(long = "watch-config")]
+    pub watch_config: bool,
 }
 
 #[tokio::main]
@@ -41,6 +47,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let config_path = config::resolve_config_path(&cli.config)?;
     let config = config::load_config(&config_path)?;
+    let workers = workers::Workers::new();
 
     let banner = cfonts::render(cfonts::Options {
         text: String::from("anymirror"),
@@ -59,8 +66,12 @@ async fn main() -> Result<()> {
     );
     tracing::info!("config loaded from {}", config_path.display());
 
+    let watch_config_path = cli.watch_config.then_some(config_path.clone());
+
     match cli.mode {
-        ServerMode::Explicit => proxy::serve_explicit(config).await,
-        ServerMode::Transparent => proxy::serve_transparent(config).await,
+        ServerMode::Explicit => proxy::serve_explicit(config, watch_config_path, workers).await,
+        ServerMode::Transparent => {
+            proxy::serve_transparent(config, watch_config_path, workers).await
+        }
     }
 }

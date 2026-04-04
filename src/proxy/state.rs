@@ -1,12 +1,11 @@
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 use super::executor::UpstreamExecutor;
-use crate::rules::pool::Rules;
+use crate::rules::pool::LiveRules;
 
 #[derive(Clone)]
 pub(crate) struct AppState<E: UpstreamExecutor> {
     pub(crate) executor: E,
     pub(crate) listen_addr: SocketAddr,
-    pub(crate) rules: Arc<Rules>,
+    pub(crate) rules: LiveRules,
 }

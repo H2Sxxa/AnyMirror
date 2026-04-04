@@ -10,19 +10,19 @@ use crate::rules::types::{
 #[test]
 fn rewrites_prefix_rule_from_root_path() {
     let rules = Rules::new(vec![Rule {
-            kind: RuleKind::Prefix,
-            matcher: RuleMatcher::PrefixUrl {
-                origin: Url::parse("https://libraries.minecraft.net/").unwrap(),
-            },
-            action: RuleAction::Mirror(UpstreamPlan {
-                url: Url::parse("https://bmclapi2.bangbang93.com/maven/").unwrap(),
-                sni: None,
-                host: None,
-                connect_host: None,
-                connect_ip: None,
-                dns: None,
-            }),
-        }]);
+        kind: RuleKind::Prefix,
+        matcher: RuleMatcher::PrefixUrl {
+            origin: Url::parse("https://libraries.minecraft.net/").unwrap(),
+        },
+        action: RuleAction::Mirror(UpstreamPlan {
+            url: Url::parse("https://bmclapi2.bangbang93.com/maven/").unwrap(),
+            sni: None,
+            host: None,
+            connect_host: None,
+            connect_ip: None,
+            dns: None,
+        }),
+    }]);
 
     let original =
         Url::parse("https://libraries.minecraft.net/com/example/demo/1.0/demo-1.0.jar").unwrap();
@@ -113,22 +113,22 @@ action:
 #[test]
 fn structured_host_suffix_rule_matches_dns_hosts() {
     let rules = Rules::new(vec![Rule {
-            kind: RuleKind::HostSuffix,
-            matcher: RuleMatcher::Host(HostRuleMatcher {
-                pattern: HostPattern::Suffix("example.com".to_string()),
-                scheme: None,
-                port: None,
-                path_prefix: None,
-            }),
-            action: RuleAction::Mirror(UpstreamPlan {
-                url: Url::parse("https://mirror.example.com/").unwrap(),
-                sni: None,
-                host: None,
-                connect_host: None,
-                connect_ip: None,
-                dns: None,
-            }),
-        }]);
+        kind: RuleKind::HostSuffix,
+        matcher: RuleMatcher::Host(HostRuleMatcher {
+            pattern: HostPattern::Suffix("example.com".to_string()),
+            scheme: None,
+            port: None,
+            path_prefix: None,
+        }),
+        action: RuleAction::Mirror(UpstreamPlan {
+            url: Url::parse("https://mirror.example.com/").unwrap(),
+            sni: None,
+            host: None,
+            connect_host: None,
+            connect_ip: None,
+            dns: None,
+        }),
+    }]);
 
     assert!(rules.matches_dns_host("api.example.com"));
     assert!(rules.matches_dns_host("example.com"));

@@ -2,7 +2,6 @@ use std::net::SocketAddr;
 
 use anyhow::{Context, Result};
 use ipnet::{Ipv4Net, Ipv6Net};
-use tokio::task;
 use windivert::{layer::WinDivertLayerTrait, WinDivert};
 
 use crate::config::AppConfig;
@@ -15,6 +14,7 @@ use crate::traffic::windivert::config::{
     WindowsBackendPlan,
 };
 use crate::traffic::windivert::filters;
+use crate::workers::Workers;
 
 use super::capture::run_capture_loop;
 
@@ -35,6 +35,7 @@ pub fn run_transparent_windivert_runtimes(
     config: &AppConfig,
     fake_dns_server: FakeDnsServer,
     proxy_redirect_addr: SocketAddr,
+    workers: Workers,
 ) -> Result<()> {
     let proxy_port = proxy_redirect_addr.port();
     let tls_port = config.tls_port.unwrap_or(proxy_port + 1);
@@ -56,7 +57,7 @@ pub fn run_transparent_windivert_runtimes(
         transparent_nat_table_v6: nat_table_v6.clone(),
     };
 
-    spawn_nat_cleanup_task(nat_table_v4.clone(), nat_table_v6.clone());
+    spawn_nat_cleanup_task(nat_table_v4.clone(), nat_table_v6.clone(), workers.clone());
 
     tracing::info!(
         fake_ipv4_range = %fake_ipv4_range,
@@ -72,6 +73,7 @@ pub fn run_transparent_windivert_runtimes(
             TransparentCaptureKind::DnsResponder,
         ),
         None,
+        workers.clone(),
     )?;
     start_transparent_runtime(
         "WinDivert DNS-over-TCP redirect started",
@@ -80,6 +82,7 @@ pub fn run_transparent_windivert_runtimes(
             TransparentCaptureKind::TcpDnsRedirect,
         ),
         Some(local_dns_port),
+        workers.clone(),
     )?;
     start_transparent_runtime(
         "WinDivert fake-ip request capture started",
@@ -93,6 +96,7 @@ pub fn run_transparent_windivert_runtimes(
             TransparentCaptureKind::TcpRequestRedirect,
         ),
         None,
+        workers.clone(),
     )?;
     start_transparent_runtime(
         "WinDivert fake-ip QUIC drop strategy started",
@@ -101,6 +105,7 @@ pub fn run_transparent_windivert_runtimes(
             TransparentCaptureKind::UdpQuicDrop,
         ),
         None,
+        workers.clone(),
     )?;
     start_transparent_runtime(
         "WinDivert fake-ip proxy response capture started",
@@ -113,6 +118,7 @@ pub fn run_transparent_windivert_runtimes(
             TransparentCaptureKind::TcpProxyResponse,
         ),
         None,
+        workers,
     )?;
 
     Ok(())
@@ -146,9 +152,10 @@ fn start_transparent_runtime(
     message: &'static str,
     config: WinDivertConfig,
     local_dns_port: Option<u16>,
+    workers: Workers,
 ) -> Result<()> {
     let runtime = WinDivertRuntime::new(config)?;
-    runtime.start()?;
+    runtime.start(workers)?;
     match local_dns_port {
         Some(port) => {
             tracing::info!(plan = %runtime.plan_summary(), local_dns_port = port, "{message}");
@@ -161,7 +168,7 @@ fn start_transparent_runtime(
 }
 
 impl WinDivertRuntime {
-    pub fn start(&self) -> Result<()> {
+    pub fn start(&self, workers: Workers) -> Result<()> {
         let RuntimeBackend::Windows(plan) = &self.backend;
 
         let proxy_port = self.config.local_proxy_addr.port();
@@ -173,13 +180,14 @@ impl WinDivertRuntime {
         let fake_dns_server = self.config.fake_dns_server.clone();
         let nat_table_v4 = self.config.transparent_nat_table_v4.clone();
         let nat_table_v6 = self.config.transparent_nat_table_v6.clone();
+        let worker_name = format!("windivert-{:?}", capture_kind);
 
         match plan.layer {
             WinDivertLayer::Network => {
                 let wd = WinDivert::network(&plan.filter, plan.priority, plan.flags)
                     .context("Failed to open WinDivert handle (Network Layer)")?;
                 apply_windivert_params(&wd, plan);
-                task::spawn_blocking(move || {
+                workers.spawn_blocking(worker_name, move || {
                     run_capture_loop(
                         wd,
                         capture_kind,
@@ -198,7 +206,7 @@ impl WinDivertRuntime {
                 let wd = WinDivert::forward(&plan.filter, plan.priority, plan.flags)
                     .context("Failed to open WinDivert handle (Forward Layer)")?;
                 apply_windivert_params(&wd, plan);
-                task::spawn_blocking(move || {
+                workers.spawn_blocking(worker_name, move || {
                     run_capture_loop(
                         wd,
                         capture_kind,

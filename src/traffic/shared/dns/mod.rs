@@ -20,14 +20,12 @@ use hickory_server::{
     authority::MessageResponseBuilder,
     server::{Request, RequestHandler, ResponseHandler, ResponseInfo, ServerFuture},
 };
-use tokio::{
-    net::UdpSocket,
-    spawn,
-};
+use tokio::net::UdpSocket;
 
 use crate::config::FakeDnsOptions;
-use crate::rules::pool::Rules;
+use crate::rules::pool::LiveRules;
 use crate::socket::bind_dual_stack_tcp_listener;
+use crate::workers::Workers;
 
 pub use fake_ip::FakeIpStore;
 
@@ -41,7 +39,7 @@ pub struct FakeDnsServer {
 #[derive(Debug)]
 struct FakeDnsState {
     fake_ip_store: FakeIpStore,
-    rules: Rules,
+    rules: LiveRules,
     options: FakeDnsOptions,
     resolver: TokioResolver,
 }
@@ -64,10 +62,14 @@ struct DnsResolution {
 }
 
 impl FakeDnsServer {
-    pub async fn start(options: FakeDnsOptions, rules: &Rules) -> Result<Self> {
+    pub async fn start(
+        options: FakeDnsOptions,
+        rules: LiveRules,
+        workers: Workers,
+    ) -> Result<Self> {
         let state = Arc::new(FakeDnsState::new(options, rules)?);
         let server = Self { state };
-        server.spawn().await?;
+        server.spawn(workers).await?;
         Ok(server)
     }
 
@@ -96,7 +98,7 @@ impl FakeDnsServer {
         }
     }
 
-    async fn spawn(&self) -> Result<()> {
+    async fn spawn(&self, workers: Workers) -> Result<()> {
         let udp_socket = UdpSocket::bind(self.state.options.listen_addr)
             .await
             .with_context(|| {
@@ -124,7 +126,7 @@ impl FakeDnsServer {
         server.register_socket(udp_socket);
         server.register_listener(tcp_listener, DNS_TCP_REQUEST_TIMEOUT);
 
-        spawn(async move {
+        workers.spawn("fake-dns-server", async move {
             if let Err(error) = server.block_until_done().await {
                 tracing::error!(?error, "Fake DNS server exited unexpectedly");
             }
@@ -144,14 +146,14 @@ impl FakeDnsServer {
 }
 
 impl FakeDnsState {
-    fn new(options: FakeDnsOptions, rules: &Rules) -> Result<Self> {
+    fn new(options: FakeDnsOptions, rules: LiveRules) -> Result<Self> {
         let resolver = TokioResolver::builder_tokio()
             .map_err(|error| anyhow!("Failed to create fake DNS resolver: {}", error))?
             .build();
 
         Ok(Self {
             fake_ip_store: FakeIpStore::new(options.fake_ipv4_range, options.fake_ipv6_range),
-            rules: rules.clone(),
+            rules,
             options,
             resolver,
         })

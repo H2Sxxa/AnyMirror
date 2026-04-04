@@ -74,12 +74,18 @@ anymirror --mode explicit --config config.yml
 # 透明代理模式（拦截本地出站流量）
 anymirror --mode transparent --config config.yml
 
+# 监视配置文件，规则变更时自动热重载
+anymirror --mode transparent --config config.yml --watch-config
+
 # 透明网关模式：把 config.yml 里的 backend.windivert.layer 改成 network-forward
 anymirror --mode transparent --config config.yml
 ```
 
 `--config` 也支持简单 alias。例如 `--config mcdev` 会依次尝试当前目录下的
 `config.mcdev.yaml`、`config.mcdev.yml`、`mcdev.yaml`、`mcdev.yml`。
+
+`--watch-config` 目前只会热重载规则集（`includes` / `rules`）。监听端口和 backend
+相关配置变更后，仍然需要重启进程。
 
 ### 模式支持范围
 
@@ -159,6 +165,21 @@ includes:
 - **backend.dns.record_ttl_secs**：生成 fake A 和 AAAA 记录时使用的 TTL。
 - **backend.windivert.layer**：透明模式下 WinDivert 使用的捕获层。`network` 用于本机流量，`network-forward` 用于 WSL、虚拟机或网关场景下的转发流量。
 - **includes：** 结构化 `match + action` 规则列表（见下方规则匹配模式）
+
+### 配置监视与热重载
+
+使用 `--watch-config` 启动后，AnyMirror 会轮询当前解析出的配置文件路径，并在文件变化时原地热重载规则集。为避免编辑器连续写入带来的抖动，watcher 会等待文件的最后修改时间稳定一小段时间后再执行重载。
+
+- 可立即热生效：
+  - `includes`
+  - `rules`
+- 仍需重启进程：
+  - `listen`
+  - `tls_port`
+  - `backend.dns.*`
+  - `backend.windivert.*`
+
+透明模式下，本地代理和 `FakeDnsServer` 会共用这份热更新后的规则，因此规则变化会同时影响请求匹配和 fake-ip DNS 判定。
 
 ### DNS Resolver 模式
 
@@ -344,7 +365,8 @@ includes:
 - [x] 结构化规则动作，支持 `mirror`、`direct`、`reject`
 - [x] 可扩展的 upstream 配置（`connect_ip`、`connect_host`、`sni` 与自定义 upstream DNS）
 - [x] CLI 启动参数支持配置 alias fallback（如 `--config mcdev` 自动解析到 `config.mcdev.yml`）
-- [ ] 配置文件监视和热重载（配置文件变化时自动重新加载）
+- [x] 配置文件监视与规则热重载（通过 `--watch-config`）
+- [ ] 监听器、Fake DNS 服务和拦截后端的完整运行时热重载
 - [ ] TUN/TAP 设备支持，用于跨平台部署（macOS、Linux），集成用户态 TCP/IP 协议栈
 - [ ] DoH / DoT 等加密 DNS 的拦截支持
 - [ ] 高级规则匹配（正则表达式、通配主机模式、HTTP 版本/方法筛选）

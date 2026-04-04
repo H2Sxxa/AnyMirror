@@ -74,12 +74,18 @@ anymirror --mode explicit --config config.yml
 # Transparent mode (intercepts outbound traffic locally)
 anymirror --mode transparent --config config.yml
 
+# Watch the config file and hot reload rules/includes on change
+anymirror --mode transparent --config config.yml --watch-config
+
 # Transparent gateway mode: set backend.windivert.layer to network-forward in config.yml
 anymirror --mode transparent --config config.yml
 ```
 
 `--config` also supports simple aliases. For example, `--config mcdev` will try
 `config.mcdev.yaml`, `config.mcdev.yml`, `mcdev.yaml`, and `mcdev.yml` in the current directory.
+
+`--watch-config` currently hot reloads only the rule set (`includes` / `rules`). Changes to
+listener ports or backend settings still require a full process restart.
 
 ### Mode Support
 
@@ -159,6 +165,24 @@ includes:
 - **backend.dns.record_ttl_secs**: TTL used for generated fake A and AAAA records.
 - **backend.windivert.layer**: WinDivert capture layer used in transparent mode. Use `network` for local traffic and `network-forward` for forwarded traffic such as WSL, VMs, or gateway scenarios.
 - **includes:** List of structured `match + action` rules (see Rule Matching Modes below)
+
+### Config Watch And Hot Reload
+
+When started with `--watch-config`, AnyMirror polls the resolved config file and hot reloads the
+rule set in place. The watcher also debounces reloads by waiting until the file modification time
+has stayed stable for a short window before reloading.
+
+- Hot reloaded immediately:
+  - `includes`
+  - `rules`
+- Still requires restart:
+  - `listen`
+  - `tls_port`
+  - `backend.dns.*`
+  - `backend.windivert.*`
+
+Transparent mode reuses the reloaded rules in both the local proxy and `FakeDnsServer`, so rule
+changes affect request matching and fake-ip DNS decisions without restarting the process.
 
 ### DNS Resolver Modes
 
@@ -344,7 +368,8 @@ Structured actions:
 - [x] Structured rule actions with `mirror`, `direct`, and `reject`
 - [x] Extensible upstream options (`connect_ip`, `connect_host`, `sni`, and custom upstream DNS)
 - [x] CLI startup flow with config alias fallback (`--config mcdev` -> `config.mcdev.yml` etc.)
-- [ ] Configuration file watch and hot reload (automatic reload on config changes)
+- [x] Config file watch with rule hot reload via `--watch-config`
+- [ ] Full runtime hot reload for listeners, fake DNS server, and intercept backend
 - [ ] TUN/TAP device support for cross-platform deployment (macOS, Linux) with user-space TCP/IP stack
 - [ ] Encrypted DNS interception for DoH/DoT
 - [ ] Advanced rule matching (regex, wildcard host patterns, HTTP version/method filtering)
