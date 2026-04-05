@@ -42,6 +42,7 @@ This approach stays transparent to applications while avoiding the classic "same
     - WinDivert runtime files available beside the executable
   - `backend.kind: tun` + `backend.tun.stack: smoltcp`
     - A desktop OS with TUN support
+    - Windows requires `wintun.dll` beside the executable
     - Windows currently auto-configures the TUN adapter DNS; other platforms still require platform-specific DNS setup
 
 ## Installation & Setup
@@ -58,7 +59,15 @@ The transparent proxy mode requires the WinDivert driver. Download and install i
 
 **Note:** Keep the runtime files beside the executable. If you build from source, keep `WinDivert.lib` available for linking as well.
 
-### 2. Trust the TLS Certificate
+### 2. Install Wintun For The TUN Backend
+
+If you run transparent mode with `backend.kind: tun` on Windows, download `wintun.dll` from the
+[official Wintun site](https://wintun.net/) and place it beside the executable.
+
+**Note:** This requirement applies to the TUN backend on Windows. The WinDivert backend does not
+use `wintun.dll`.
+
+### 3. Trust the TLS Certificate
 
 When running in transparent mode, anymirror intercepts HTTPS traffic and re-encrypts it with a self-signed certificate. To avoid security warnings:
 
@@ -201,8 +210,24 @@ includes:
   - second usable fake IPv4 / IPv6 address: TUN DNS address
   - fake-ip allocation starts from the third usable address
 - On Windows, AnyMirror currently configures the TUN adapter DNS automatically to the reserved in-tunnel DNS address.
+- On Linux, macOS, and other non-Windows desktop platforms, you currently need to point the TUN interface DNS at the reserved in-tunnel DNS address yourself.
 - QUIC is still handled by dropping fake-ip UDP/443 traffic to force TCP/TLS fallback.
 - The `system` TUN stack is still TODO.
+
+### Current TUN DNS Setup
+
+- Windows:
+  - AnyMirror configures the TUN adapter DNS automatically.
+  - The TUN backend on Windows also requires `wintun.dll` beside the executable.
+- Non-Windows desktop platforms:
+  - AnyMirror does not yet configure interface DNS automatically.
+  - Point the TUN interface DNS at the reserved TUN DNS address:
+    - IPv4: the second usable address in `backend.dns.fake_ipv4_range`
+    - IPv6: the second usable address in `backend.dns.fake_ipv6_range`
+  - Example with the default ranges:
+    - TUN interface address: `198.18.0.1`
+    - TUN DNS address: `198.18.0.2`
+    - fake-ip allocation starts at `198.18.0.3`
 
 ### Config Watch And Hot Reload
 

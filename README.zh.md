@@ -42,6 +42,7 @@ AnyMirror 现在采用基于 fake-ip 的透明代理链路：
     - 可执行文件同目录下提供 WinDivert 运行时文件
   - `backend.kind: tun` + `backend.tun.stack: smoltcp`
     - 需要支持 TUN 的桌面操作系统
+    - Windows 需要把 `wintun.dll` 放在可执行文件同目录
     - Windows 当前会自动给 TUN 适配器配置 DNS；其他平台仍然需要平台侧 DNS 配置
 
 ## 安装与配置
@@ -58,7 +59,14 @@ AnyMirror 现在采用基于 fake-ip 的透明代理链路：
 
 **注意：** 运行时文件需要和可执行文件放在同一目录；如果从源码构建，还要保证 `WinDivert.lib` 可用于链接。
 
-### 2. 信任 TLS 证书
+### 2. 为 TUN 后端安装 Wintun
+
+如果你在 Windows 上使用 `backend.kind: tun` 运行透明模式，需要从
+[Wintun 官网](https://wintun.net/) 下载 `wintun.dll`，并把它放在可执行文件同目录。
+
+**注意：** 这个要求只针对 Windows 下的 TUN 后端；WinDivert 后端不依赖 `wintun.dll`。
+
+### 3. 信任 TLS 证书
 
 在透明代理模式下，anymirror 拦截 HTTPS 流量并用自签名证书重新加密。为避免安全警告：
 
@@ -199,8 +207,24 @@ includes:
   - 第二个可用 IPv4 / IPv6 地址：TUN DNS 地址
   - fake-ip 分配从第三个可用地址开始
 - Windows 当前会自动把 TUN 适配器 DNS 配到保留的 TUN DNS 地址。
+- Linux、macOS 和其他非 Windows 桌面平台目前仍需要你手动把 TUN 接口 DNS 指向这个保留的 TUN DNS 地址。
 - QUIC 当前仍然通过丢弃 fake-ip `UDP/443` 来强制客户端回退到 TCP/TLS。
 - `system` TUN 栈目前还是 TODO。
+
+### 当前 TUN DNS 设置
+
+- Windows：
+  - AnyMirror 会自动给 TUN 适配器配置 DNS。
+  - Windows 下的 TUN 后端还要求可执行文件同目录存在 `wintun.dll`。
+- 非 Windows 桌面平台：
+  - AnyMirror 目前不会自动配置接口 DNS。
+  - 需要你手动把 TUN 接口 DNS 指向保留的 TUN DNS 地址：
+    - IPv4：`backend.dns.fake_ipv4_range` 中第二个可用地址
+    - IPv6：`backend.dns.fake_ipv6_range` 中第二个可用地址
+  - 默认网段下的例子：
+    - TUN 接口地址：`198.18.0.1`
+    - TUN DNS 地址：`198.18.0.2`
+    - fake-ip 分配从 `198.18.0.3` 开始
 
 ### 配置监视与热重载
 
