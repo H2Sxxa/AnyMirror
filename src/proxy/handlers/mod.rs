@@ -1,3 +1,4 @@
+pub(super) mod common;
 pub(super) mod fetch;
 pub(super) mod health;
 pub(super) mod proxy_entry;

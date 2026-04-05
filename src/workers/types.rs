@@ -6,6 +6,15 @@ pub enum WorkerKind {
     Blocking,
 }
 
+impl WorkerKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Async => "async",
+            Self::Blocking => "blocking",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerState {
     Running,

@@ -1,30 +1,22 @@
-use axum::{
-    body::Body,
-    extract::State,
-    http::{Method, Request, StatusCode},
-    response::Response,
-};
+use axum::{body::Body, extract::State, http::Request, response::Response};
 
 use super::super::{
-    executor::UpstreamExecutor,
-    forwarding::forward_request,
-    request_parser::{ensure_supported_method, parse_absolute_url},
-    responses::json_error,
-    state::AppState,
+    executor::UpstreamExecutor, request_parser::parse_absolute_url, state::AppState,
 };
+use super::common::{ensure_forwardable_method, forward_standard_request, reject_connect_request};
 
 pub(crate) async fn proxy_entry<E: UpstreamExecutor>(
     State(state): State<AppState<E>>,
     request: Request<Body>,
 ) -> Response {
-    if request.method() == Method::CONNECT {
-        return json_error(
-            StatusCode::NOT_IMPLEMENTED,
-            "CONNECT is not supported in this build; use explicit URL rewriting instead",
-        );
+    if let Some(response) = reject_connect_request(
+        &request,
+        "CONNECT is not supported in this build; use explicit URL rewriting instead",
+    ) {
+        return response;
     }
 
-    if let Err(response) = ensure_supported_method(request.method()) {
+    if let Err(response) = ensure_forwardable_method(&request) {
         return response;
     }
 
@@ -33,15 +25,5 @@ pub(crate) async fn proxy_entry<E: UpstreamExecutor>(
         Err(response) => return response,
     };
 
-    let (parts, body) = request.into_parts();
-
-    forward_request(
-        &state,
-        parts.method,
-        &parts.headers,
-        body,
-        original,
-        Some("proxy"),
-    )
-    .await
+    forward_standard_request(&state, request, original, "proxy").await
 }

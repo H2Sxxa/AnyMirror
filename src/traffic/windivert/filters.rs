@@ -9,14 +9,11 @@ pub fn build_transparent_fake_ip_tcp_request_filter(
     fake_ipv4_range: Ipv4Net,
     fake_ipv6_range: Ipv6Net,
 ) -> String {
-    let first_ipv4 = first_usable_ipv4(fake_ipv4_range);
-    let last_ipv4 = last_usable_ipv4(fake_ipv4_range);
-    let first_ipv6 = first_usable_ipv6(fake_ipv6_range);
-    let last_ipv6 = last_usable_ipv6(fake_ipv6_range);
+    let destination_clause = fake_ip_destination_clause(fake_ipv4_range, fake_ipv6_range);
 
     format!(
-        "outbound and tcp and !loopback and tcp.DstPort != {} and tcp.DstPort != {} and ((ip and ip.DstAddr >= {} and ip.DstAddr <= {}) or (ipv6 and ipv6.DstAddr >= {} and ipv6.DstAddr <= {}))",
-        proxy_port, tls_port, first_ipv4, last_ipv4, first_ipv6, last_ipv6
+        "outbound and tcp and !loopback and tcp.DstPort != {} and tcp.DstPort != {} and {}",
+        proxy_port, tls_port, destination_clause
     )
 }
 
@@ -47,14 +44,21 @@ pub fn build_transparent_fake_ip_quic_filter(
     fake_ipv4_range: Ipv4Net,
     fake_ipv6_range: Ipv6Net,
 ) -> String {
-    let first_ipv4 = first_usable_ipv4(fake_ipv4_range);
-    let last_ipv4 = last_usable_ipv4(fake_ipv4_range);
-    let first_ipv6 = first_usable_ipv6(fake_ipv6_range);
-    let last_ipv6 = last_usable_ipv6(fake_ipv6_range);
+    let destination_clause = fake_ip_destination_clause(fake_ipv4_range, fake_ipv6_range);
 
     format!(
-        "outbound and udp and !loopback and udp.DstPort == 443 and ((ip and ip.DstAddr >= {} and ip.DstAddr <= {}) or (ipv6 and ipv6.DstAddr >= {} and ipv6.DstAddr <= {}))",
-        first_ipv4, last_ipv4, first_ipv6, last_ipv6
+        "outbound and udp and !loopback and udp.DstPort == 443 and {}",
+        destination_clause
+    )
+}
+
+fn fake_ip_destination_clause(fake_ipv4_range: Ipv4Net, fake_ipv6_range: Ipv6Net) -> String {
+    format!(
+        "((ip and ip.DstAddr >= {} and ip.DstAddr <= {}) or (ipv6 and ipv6.DstAddr >= {} and ipv6.DstAddr <= {}))",
+        first_usable_ipv4(fake_ipv4_range),
+        last_usable_ipv4(fake_ipv4_range),
+        first_usable_ipv6(fake_ipv6_range),
+        last_usable_ipv6(fake_ipv6_range)
     )
 }
 
@@ -72,13 +76,17 @@ fn first_usable_ipv6(fake_ipv6_range: Ipv6Net) -> Ipv6Addr {
 
 fn last_usable_ipv6(fake_ipv6_range: Ipv6Net) -> Ipv6Addr {
     let network = u128::from_be_bytes(fake_ipv6_range.network().octets());
-    let host_bits = 128u32.saturating_sub(u32::from(fake_ipv6_range.prefix_len()));
-    let host_mask = match host_bits {
+    let host_mask = ipv6_host_mask(fake_ipv6_range.prefix_len());
+    Ipv6Addr::from(network | host_mask)
+}
+
+fn ipv6_host_mask(prefix_len: u8) -> u128 {
+    let host_bits = 128u32.saturating_sub(u32::from(prefix_len));
+    match host_bits {
         0 => 0,
         128 => u128::MAX,
         bits => (1u128 << bits) - 1,
-    };
-    Ipv6Addr::from(network | host_mask)
+    }
 }
 
 #[cfg(test)]

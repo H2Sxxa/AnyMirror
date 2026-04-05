@@ -36,28 +36,20 @@ struct SuffixHostNode {
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct Ipv4CidrTrie {
-    root: Ipv4CidrNode,
+    root: CidrNode,
 }
 
 #[derive(Debug, Clone, Default)]
-struct Ipv4CidrNode {
-    zero: Option<Box<Ipv4CidrNode>>,
-    one: Option<Box<Ipv4CidrNode>>,
+struct CidrNode {
+    zero: Option<Box<CidrNode>>,
+    one: Option<Box<CidrNode>>,
     terminal_indices: Vec<usize>,
     min_rule_index: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct Ipv6CidrTrie {
-    root: Ipv6CidrNode,
-}
-
-#[derive(Debug, Clone, Default)]
-struct Ipv6CidrNode {
-    zero: Option<Box<Ipv6CidrNode>>,
-    one: Option<Box<Ipv6CidrNode>>,
-    terminal_indices: Vec<usize>,
-    min_rule_index: Option<usize>,
+    root: CidrNode,
 }
 
 impl PrefixPathTrie {
@@ -170,125 +162,124 @@ impl SuffixHostTrie {
 
 impl Ipv4CidrTrie {
     pub(super) fn insert(&mut self, cidr: Ipv4Net, index: usize) {
-        let mut node = &mut self.root;
-        update_min_rule_index(&mut node.min_rule_index, index);
-        let bits = u32::from(cidr.network());
-        for depth in 0..cidr.prefix_len() {
-            let bit = bit_u32(bits, depth);
-            node = if bit {
-                node.one.get_or_insert_with(Box::<Ipv4CidrNode>::default)
-            } else {
-                node.zero.get_or_insert_with(Box::<Ipv4CidrNode>::default)
-            };
-            update_min_rule_index(&mut node.min_rule_index, index);
-        }
-        node.terminal_indices.push(index);
+        insert_cidr(
+            &mut self.root,
+            u128::from(u32::from(cidr.network())),
+            cidr.prefix_len(),
+            32,
+            index,
+        );
     }
 
     pub(super) fn visit_matches<F>(&self, ip: Ipv4Addr, cutoff_index: Option<usize>, mut visitor: F)
     where
         F: FnMut(usize),
     {
-        if should_skip_subtree(self.root.min_rule_index, cutoff_index) {
-            return;
-        }
-
-        let mut node = &self.root;
-        for index in &node.terminal_indices {
-            if should_skip_index(*index, cutoff_index) {
-                continue;
-            }
-            visitor(*index);
-        }
-
-        let bits = u32::from(ip);
-        for depth in 0..32 {
-            let next = if bit_u32(bits, depth) {
-                node.one.as_deref()
-            } else {
-                node.zero.as_deref()
-            };
-            let Some(next) = next else {
-                return;
-            };
-            if should_skip_subtree(next.min_rule_index, cutoff_index) {
-                return;
-            }
-            node = next;
-            for index in &node.terminal_indices {
-                if should_skip_index(*index, cutoff_index) {
-                    continue;
-                }
-                visitor(*index);
-            }
-        }
+        visit_cidr_matches(
+            &self.root,
+            u128::from(u32::from(ip)),
+            32,
+            cutoff_index,
+            &mut visitor,
+        );
     }
 }
 
 impl Ipv6CidrTrie {
     pub(super) fn insert(&mut self, cidr: Ipv6Net, index: usize) {
-        let mut node = &mut self.root;
-        update_min_rule_index(&mut node.min_rule_index, index);
-        let bits = u128::from_be_bytes(cidr.network().octets());
-        for depth in 0..cidr.prefix_len() {
-            let bit = bit_u128(bits, depth);
-            node = if bit {
-                node.one.get_or_insert_with(Box::<Ipv6CidrNode>::default)
-            } else {
-                node.zero.get_or_insert_with(Box::<Ipv6CidrNode>::default)
-            };
-            update_min_rule_index(&mut node.min_rule_index, index);
-        }
-        node.terminal_indices.push(index);
+        insert_cidr(
+            &mut self.root,
+            u128::from_be_bytes(cidr.network().octets()),
+            cidr.prefix_len(),
+            128,
+            index,
+        );
     }
 
     pub(super) fn visit_matches<F>(&self, ip: Ipv6Addr, cutoff_index: Option<usize>, mut visitor: F)
     where
         F: FnMut(usize),
     {
-        if should_skip_subtree(self.root.min_rule_index, cutoff_index) {
-            return;
-        }
+        visit_cidr_matches(
+            &self.root,
+            u128::from_be_bytes(ip.octets()),
+            128,
+            cutoff_index,
+            &mut visitor,
+        );
+    }
+}
 
-        let mut node = &self.root;
-        for index in &node.terminal_indices {
-            if should_skip_index(*index, cutoff_index) {
-                continue;
-            }
-            visitor(*index);
+impl CidrNode {
+    fn child(&self, bit: bool) -> Option<&Self> {
+        if bit {
+            self.one.as_deref()
+        } else {
+            self.zero.as_deref()
         }
+    }
 
-        let bits = u128::from_be_bytes(ip.octets());
-        for depth in 0..128 {
-            let next = if bit_u128(bits, depth) {
-                node.one.as_deref()
-            } else {
-                node.zero.as_deref()
-            };
-            let Some(next) = next else {
-                return;
-            };
-            if should_skip_subtree(next.min_rule_index, cutoff_index) {
-                return;
-            }
-            node = next;
-            for index in &node.terminal_indices {
-                if should_skip_index(*index, cutoff_index) {
-                    continue;
-                }
-                visitor(*index);
-            }
+    fn child_mut(&mut self, bit: bool) -> &mut Self {
+        if bit {
+            self.one.get_or_insert_with(Box::<Self>::default)
+        } else {
+            self.zero.get_or_insert_with(Box::<Self>::default)
         }
     }
 }
 
-fn bit_u32(value: u32, depth: u8) -> bool {
-    let shift = 31 - depth;
-    ((value >> shift) & 1) == 1
+fn insert_cidr(root: &mut CidrNode, bits: u128, prefix_len: u8, max_depth: u8, index: usize) {
+    let mut node = root;
+    update_min_rule_index(&mut node.min_rule_index, index);
+    for depth in 0..prefix_len {
+        node = node.child_mut(cidr_bit(bits, max_depth, depth));
+        update_min_rule_index(&mut node.min_rule_index, index);
+    }
+    node.terminal_indices.push(index);
 }
 
-fn bit_u128(value: u128, depth: u8) -> bool {
-    let shift = 127 - depth;
+fn visit_cidr_matches<F>(
+    root: &CidrNode,
+    bits: u128,
+    max_depth: u8,
+    cutoff_index: Option<usize>,
+    visitor: &mut F,
+) where
+    F: FnMut(usize),
+{
+    if should_skip_subtree(root.min_rule_index, cutoff_index) {
+        return;
+    }
+
+    let mut node = root;
+    visit_terminal_indices(&node.terminal_indices, cutoff_index, visitor);
+
+    for depth in 0..max_depth {
+        let Some(next) = node.child(cidr_bit(bits, max_depth, depth)) else {
+            return;
+        };
+        if should_skip_subtree(next.min_rule_index, cutoff_index) {
+            return;
+        }
+        node = next;
+        visit_terminal_indices(&node.terminal_indices, cutoff_index, visitor);
+    }
+}
+
+fn visit_terminal_indices<F>(indices: &[usize], cutoff_index: Option<usize>, visitor: &mut F)
+where
+    F: FnMut(usize),
+{
+    for index in indices {
+        if should_skip_index(*index, cutoff_index) {
+            continue;
+        }
+        visitor(*index);
+    }
+}
+
+fn cidr_bit(value: u128, max_depth: u8, depth: u8) -> bool {
+    let shift = u32::from(max_depth - depth - 1);
     ((value >> shift) & 1) == 1
 }
 

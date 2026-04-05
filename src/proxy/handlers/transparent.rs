@@ -1,32 +1,26 @@
-use axum::{
-    body::Body,
-    extract::State,
-    http::HeaderValue,
-    http::{Method, Request, StatusCode},
-    response::Response,
-};
+use axum::{body::Body, extract::State, http::HeaderValue, http::Request, response::Response};
 
 use super::super::{
     executor::UpstreamExecutor,
     forwarding::forward_transparent_request,
-    request_parser::{ORIGINAL_SCHEME_HEADER, ensure_supported_method, resolve_transparent_target},
-    responses::json_error,
+    request_parser::{ORIGINAL_SCHEME_HEADER, resolve_transparent_target},
     state::AppState,
     tls::TlsIntercepted,
 };
+use super::common::{ensure_forwardable_method, reject_connect_request};
 
 pub(crate) async fn transparent_entry<E: UpstreamExecutor>(
     State(state): State<AppState<E>>,
     request: Request<Body>,
 ) -> Response {
-    if request.method() == Method::CONNECT {
-        return json_error(
-            StatusCode::NOT_IMPLEMENTED,
-            "transparent HTTPS interception is not enabled in this build",
-        );
+    if let Some(response) = reject_connect_request(
+        &request,
+        "transparent HTTPS interception is not enabled in this build",
+    ) {
+        return response;
     }
 
-    if let Err(response) = ensure_supported_method(request.method()) {
+    if let Err(response) = ensure_forwardable_method(&request) {
         return response;
     }
 

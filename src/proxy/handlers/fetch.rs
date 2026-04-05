@@ -6,19 +6,17 @@ use axum::{
 };
 
 use super::super::{
-    executor::UpstreamExecutor,
-    forwarding::forward_request,
-    request_parser::{ensure_supported_method, parse_request_url},
-    responses::RewriteQuery,
+    executor::UpstreamExecutor, request_parser::parse_request_url, responses::RewriteQuery,
     state::AppState,
 };
+use super::common::{ensure_forwardable_method, forward_standard_request};
 
 pub(crate) async fn fetch_url<E: UpstreamExecutor>(
     State(state): State<AppState<E>>,
     Query(query): Query<RewriteQuery>,
     request: Request<Body>,
 ) -> Response {
-    if let Err(response) = ensure_supported_method(request.method()) {
+    if let Err(response) = ensure_forwardable_method(&request) {
         return response;
     }
 
@@ -27,15 +25,5 @@ pub(crate) async fn fetch_url<E: UpstreamExecutor>(
         Err(response) => return response,
     };
 
-    let (parts, body) = request.into_parts();
-
-    forward_request(
-        &state,
-        parts.method,
-        &parts.headers,
-        body,
-        original,
-        Some("fetch"),
-    )
-    .await
+    forward_standard_request(&state, request, original, "fetch").await
 }

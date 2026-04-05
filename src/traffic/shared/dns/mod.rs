@@ -22,12 +22,11 @@ use hickory_server::{
 };
 use tokio::net::UdpSocket;
 use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
 
 use crate::config::FakeDnsOptions;
 use crate::rules::pool::LiveRuleSet;
 use crate::socket::bind_dual_stack_tcp_listener;
-use crate::workers::Workers;
+use crate::workers::{ShutdownJoinHandle, Workers};
 
 pub use fake_ip::FakeIpStore;
 
@@ -38,10 +37,7 @@ pub struct FakeDnsServer {
     state: Arc<FakeDnsState>,
 }
 
-pub struct FakeDnsRuntimeHandle {
-    shutdown_tx: Option<oneshot::Sender<()>>,
-    join: JoinHandle<()>,
-}
+pub type FakeDnsRuntimeHandle = ShutdownJoinHandle;
 
 #[derive(Debug)]
 struct FakeDnsState {
@@ -148,19 +144,7 @@ impl FakeDnsServer {
             "Fake DNS server started"
         );
 
-        Ok(FakeDnsRuntimeHandle {
-            shutdown_tx: Some(shutdown_tx),
-            join,
-        })
-    }
-}
-
-impl FakeDnsRuntimeHandle {
-    pub async fn shutdown(mut self) {
-        if let Some(shutdown_tx) = self.shutdown_tx.take() {
-            let _ = shutdown_tx.send(());
-        }
-        let _ = self.join.await;
+        Ok(ShutdownJoinHandle::new(shutdown_tx, join))
     }
 }
 
