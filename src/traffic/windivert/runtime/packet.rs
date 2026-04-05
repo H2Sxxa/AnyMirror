@@ -89,6 +89,7 @@ where
     }
 }
 
+#[derive(Clone, Copy)]
 struct TcpPacketContext<Addr> {
     src_ip: Addr,
     dst_ip: Addr,
@@ -255,6 +256,23 @@ where
     })
 }
 
+fn with_tcp_packet_context<A, F, H>(
+    data: &mut [u8],
+    address: &mut A,
+    ip_header_len: usize,
+    handler: H,
+) -> PacketDisposition
+where
+    F: IpPacketFamily,
+    H: FnOnce(&mut [u8], &mut A, TcpPacketContext<F::Addr>) -> PacketDisposition,
+{
+    let Some(packet) = tcp_packet_context::<F>(data, ip_header_len) else {
+        return PacketDisposition::Pass;
+    };
+
+    handler(data, address, packet)
+}
+
 fn try_packet_families<T, FV4, FV6>(ipv4: FV4, ipv6: FV6) -> Option<T>
 where
     FV4: FnOnce() -> Option<T>,
@@ -269,6 +287,32 @@ fn detect_tcp_family(data: &[u8]) -> Option<DetectedTcpFamily> {
     }
 
     Ipv6PacketFamily::tcp_header_len(data).map(DetectedTcpFamily::Ipv6)
+}
+
+fn upsert_nat_packet<F>(
+    nat_table: &TransparentNatTable<F::Addr>,
+    packet: TcpPacketContext<F::Addr>,
+    now: Instant,
+    error_message: &'static str,
+) -> Option<Instant>
+where
+    F: FamilyNatOps,
+    F::Addr: Copy + Eq + Hash,
+{
+    let expires_at = nat_expiration(now, packet.is_closing);
+    if F::upsert_nat(
+        nat_table,
+        packet.src_ip,
+        packet.src_port,
+        packet.dst_ip,
+        packet.dst_port,
+        expires_at,
+    ) {
+        Some(expires_at)
+    } else {
+        tracing::error!(ip_family = F::LABEL, "{error_message}");
+        None
+    }
 }
 
 fn handle_dns_tcp_packet<A>(
@@ -434,79 +478,75 @@ where
     F: FamilyNatOps,
     F::Addr: Copy + Eq + Hash,
 {
-    let Some(packet) = tcp_packet_context::<F>(data, ip_header_len) else {
-        return PacketDisposition::Pass;
-    };
-    if packet.dst_port == proxy_port
-        || packet.dst_port == tls_port
-        || !F::contains(capture_range, &packet.dst_ip)
-    {
-        return PacketDisposition::Pass;
-    }
-    let now = Instant::now();
-    let Some(owned_domain) = fake_dns_server
-        .and_then(|server| server.resolve_fake_domain(F::to_ip_addr(packet.dst_ip), now))
-    else {
-        return PacketDisposition::Pass;
-    };
-
-    let expires_at = nat_expiration(now, packet.is_closing);
-    if !F::upsert_nat(
-        nat_table,
-        packet.src_ip,
-        packet.src_port,
-        packet.dst_ip,
-        packet.dst_port,
-        expires_at,
-    ) {
-        tracing::error!(
-            ip_family = F::LABEL,
-            "WinDivert transparent NAT table lock poisoned"
-        );
-        return PacketDisposition::Pass;
-    }
-
-    let target_proxy_port = if packet.dst_port == 443 {
-        tls_port
-    } else {
-        proxy_port
-    };
-    F::set_request_destination_ip(data, packet.src_ip);
-    data[ip_header_len + 2..ip_header_len + 4].copy_from_slice(&target_proxy_port.to_be_bytes());
-
-    let mut host_info = String::new();
-    if ip_header_len + packet.tcp_header_len < data.len() {
-        let payload = &data[ip_header_len + packet.tcp_header_len..];
-        if let Some(host) = extract_host(payload) {
-            host_info = host;
+    with_tcp_packet_context::<A, F, _>(data, address, ip_header_len, |data, address, packet| {
+        if packet.dst_port == proxy_port
+            || packet.dst_port == tls_port
+            || !F::contains(capture_range, &packet.dst_ip)
+        {
+            return PacketDisposition::Pass;
         }
-    }
 
-    address.set_outbound_flag(false);
-    if !host_info.is_empty() {
-        tracing::info!(
-            ip_family = F::LABEL,
-            client_port = packet.src_port,
-            fake_destination_ip = %packet.dst_ip,
-            domain = %owned_domain,
-            destination_port = packet.dst_port,
-            target_proxy_port,
-            host = host_info,
-            "Intercepted fake-ip request and redirected it to the local proxy"
-        );
-    } else if packet.syn {
-        tracing::trace!(
-            ip_family = F::LABEL,
-            client_port = packet.src_port,
-            fake_destination_ip = %packet.dst_ip,
-            domain = %owned_domain,
-            destination_port = packet.dst_port,
-            target_proxy_port,
-            "Intercepted fake-ip TCP SYN and redirected it to the local proxy"
-        );
-    }
+        let now = Instant::now();
+        let Some(owned_domain) = fake_dns_server
+            .and_then(|server| server.resolve_fake_domain(F::to_ip_addr(packet.dst_ip), now))
+        else {
+            return PacketDisposition::Pass;
+        };
 
-    PacketDisposition::Modified
+        if upsert_nat_packet::<F>(
+            nat_table,
+            packet,
+            now,
+            "WinDivert transparent NAT table lock poisoned",
+        )
+        .is_none()
+        {
+            return PacketDisposition::Pass;
+        }
+
+        let target_proxy_port = if packet.dst_port == 443 {
+            tls_port
+        } else {
+            proxy_port
+        };
+        F::set_request_destination_ip(data, packet.src_ip);
+        data[ip_header_len + 2..ip_header_len + 4]
+            .copy_from_slice(&target_proxy_port.to_be_bytes());
+
+        let mut host_info = String::new();
+        if ip_header_len + packet.tcp_header_len < data.len() {
+            let payload = &data[ip_header_len + packet.tcp_header_len..];
+            if let Some(host) = extract_host(payload) {
+                host_info = host;
+            }
+        }
+
+        address.set_outbound_flag(false);
+        if !host_info.is_empty() {
+            tracing::info!(
+                ip_family = F::LABEL,
+                client_port = packet.src_port,
+                fake_destination_ip = %packet.dst_ip,
+                domain = %owned_domain,
+                destination_port = packet.dst_port,
+                target_proxy_port,
+                host = host_info,
+                "Intercepted fake-ip request and redirected it to the local proxy"
+            );
+        } else if packet.syn {
+            tracing::trace!(
+                ip_family = F::LABEL,
+                client_port = packet.src_port,
+                fake_destination_ip = %packet.dst_ip,
+                domain = %owned_domain,
+                destination_port = packet.dst_port,
+                target_proxy_port,
+                "Intercepted fake-ip TCP SYN and redirected it to the local proxy"
+            );
+        }
+
+        PacketDisposition::Modified
+    })
 }
 
 fn handle_dns_tcp_packet_impl<A, F>(
@@ -521,40 +561,34 @@ where
     F: FamilyNatOps,
     F::Addr: Copy + Eq + Hash,
 {
-    let Some(packet) = tcp_packet_context::<F>(data, ip_header_len) else {
-        return PacketDisposition::Pass;
-    };
-    if packet.dst_port != 53 || packet.src_port == local_dns_port {
-        return PacketDisposition::Pass;
-    }
+    with_tcp_packet_context::<A, F, _>(data, address, ip_header_len, |data, address, packet| {
+        if packet.dst_port != 53 || packet.src_port == local_dns_port {
+            return PacketDisposition::Pass;
+        }
 
-    let expires_at = nat_expiration(Instant::now(), packet.is_closing);
-    if !F::upsert_nat(
-        nat_table,
-        packet.src_ip,
-        packet.src_port,
-        packet.dst_ip,
-        packet.dst_port,
-        expires_at,
-    ) {
-        tracing::error!(
+        if upsert_nat_packet::<F>(
+            nat_table,
+            packet,
+            Instant::now(),
+            "WinDivert DNS NAT table lock poisoned",
+        )
+        .is_none()
+        {
+            return PacketDisposition::Pass;
+        }
+
+        F::set_request_destination_ip(data, packet.src_ip);
+        data[ip_header_len + 2..ip_header_len + 4].copy_from_slice(&local_dns_port.to_be_bytes());
+        address.set_outbound_flag(false);
+        tracing::debug!(
             ip_family = F::LABEL,
-            "WinDivert DNS NAT table lock poisoned"
+            client_port = packet.src_port,
+            original_dns_server = %packet.dst_ip,
+            local_dns_port,
+            "Redirected DNS-over-TCP request to the local fake DNS server"
         );
-        return PacketDisposition::Pass;
-    }
-
-    F::set_request_destination_ip(data, packet.src_ip);
-    data[ip_header_len + 2..ip_header_len + 4].copy_from_slice(&local_dns_port.to_be_bytes());
-    address.set_outbound_flag(false);
-    tracing::debug!(
-        ip_family = F::LABEL,
-        client_port = packet.src_port,
-        original_dns_server = %packet.dst_ip,
-        local_dns_port,
-        "Redirected DNS-over-TCP request to the local fake DNS server"
-    );
-    PacketDisposition::Modified
+        PacketDisposition::Modified
+    })
 }
 
 fn handle_proxy_response_packet_impl<A, F>(
@@ -571,28 +605,27 @@ where
     F: FamilyNatOps,
     F::Addr: Copy + Eq + Hash,
 {
-    let Some(packet) = tcp_packet_context::<F>(data, ip_header_len) else {
-        return PacketDisposition::Pass;
-    };
-    if packet.src_port != proxy_port
-        && packet.src_port != tls_port
-        && packet.src_port != local_dns_port
-    {
-        return PacketDisposition::Pass;
-    }
+    with_tcp_packet_context::<A, F, _>(data, address, ip_header_len, |data, address, packet| {
+        if packet.src_port != proxy_port
+            && packet.src_port != tls_port
+            && packet.src_port != local_dns_port
+        {
+            return PacketDisposition::Pass;
+        }
 
-    let now = Instant::now();
-    let expires_at = nat_expiration(now, packet.is_closing);
-    let Some((orig_dst_ip, orig_dst_port)) =
-        F::touch_nat(nat_table, packet.dst_ip, packet.dst_port, now, expires_at)
-    else {
-        return PacketDisposition::Pass;
-    };
+        let now = Instant::now();
+        let expires_at = nat_expiration(now, packet.is_closing);
+        let Some((orig_dst_ip, orig_dst_port)) =
+            F::touch_nat(nat_table, packet.dst_ip, packet.dst_port, now, expires_at)
+        else {
+            return PacketDisposition::Pass;
+        };
 
-    F::set_response_source_ip(data, orig_dst_ip);
-    data[ip_header_len..ip_header_len + 2].copy_from_slice(&orig_dst_port.to_be_bytes());
-    address.set_outbound_flag(false);
-    PacketDisposition::Modified
+        F::set_response_source_ip(data, orig_dst_ip);
+        data[ip_header_len..ip_header_len + 2].copy_from_slice(&orig_dst_port.to_be_bytes());
+        address.set_outbound_flag(false);
+        PacketDisposition::Modified
+    })
 }
 
 fn nat_expiration(now: Instant, is_closing: bool) -> Instant {
