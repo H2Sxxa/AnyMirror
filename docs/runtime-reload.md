@@ -32,14 +32,18 @@ The current reload plan is component-scoped:
 - `tls_port`
   - restart the TLS listener and the intercept backend
 - `backend.dns.listen`
-  - restart the fake DNS server and the intercept backend
+  - restart the fake DNS state/runtime and the intercept backend
 - `backend.dns.fake_ipv4_range`
-  - restart the fake DNS server and the intercept backend
+  - restart the fake DNS state/runtime and the intercept backend
 - `backend.dns.fake_ipv6_range`
-  - restart the fake DNS server and the intercept backend
+  - restart the fake DNS state/runtime and the intercept backend
 - `backend.dns.record_ttl_secs`
-  - restart the fake DNS server and the intercept backend
+  - restart the fake DNS state/runtime and the intercept backend
+- `backend.kind`
+  - restart only the intercept backend
 - `backend.windivert.*`
+  - restart only the intercept backend
+- `backend.tun.*`
   - restart only the intercept backend
 
 ## Runtime Model
@@ -59,7 +63,7 @@ This means:
 
 - Reload is sequential, not generation-overlapped.
 - There can be a short interruption while a component is restarted.
-- Existing transparent connections can be reset when the fake DNS service or intercept backend is reloaded.
+- Existing transparent connections can be reset when the fake DNS state/runtime or intercept backend is reloaded.
 - Client-side DoH/DoT interception is still not supported.
 
 ## Related Files

@@ -1,18 +1,18 @@
-/// Extract HTTP Host header from payload
-pub fn extract_http_host(payload: &[u8]) -> Option<String> {
+/// Extract HTTP Host header from payload.
+pub(crate) fn extract_http_host(payload: &[u8]) -> Option<String> {
     let start = payload
         .windows(6)
-        .position(|w| w.eq_ignore_ascii_case(b"Host: "))?
+        .position(|window| window.eq_ignore_ascii_case(b"Host: "))?
         + 6;
     let end = payload[start..]
         .iter()
-        .position(|&c| c == b'\r' || c == b'\n')
-        .map_or(payload.len(), |pos| start + pos);
+        .position(|&byte| byte == b'\r' || byte == b'\n')
+        .map_or(payload.len(), |position| start + position);
     String::from_utf8(payload[start..end].to_vec()).ok()
 }
 
-/// Extract TLS SNI (Server Name Indication) from ClientHello
-pub fn extract_tls_sni(payload: &[u8]) -> Option<String> {
+/// Extract TLS SNI (Server Name Indication) from ClientHello.
+pub(crate) fn extract_tls_sni(payload: &[u8]) -> Option<String> {
     if payload.len() <= 43 || payload[0] != 0x16 || payload[1] != 0x03 || payload[5] != 0x01 {
         return None;
     }
@@ -40,12 +40,9 @@ pub fn extract_tls_sni(payload: &[u8]) -> Option<String> {
         offset += 4;
 
         if ext_type == 0x0000 {
-            let mut sni_offset = offset;
-            sni_offset += 2; // skip list len
-
+            let mut sni_offset = offset + 2;
             let name_type = *payload.get(sni_offset)?;
             if name_type == 0 {
-                // 0 = host_name
                 sni_offset += 1;
                 let name_len = ((*payload.get(sni_offset)? as usize) << 8)
                     | (*payload.get(sni_offset + 1)? as usize);
@@ -55,13 +52,14 @@ pub fn extract_tls_sni(payload: &[u8]) -> Option<String> {
                 return String::from_utf8(name_bytes.to_vec()).ok();
             }
         }
+
         offset += ext_data_len;
     }
 
     None
 }
 
-/// Extract host from payload (tries HTTP Host header first, then TLS SNI)
-pub fn extract_host(payload: &[u8]) -> Option<String> {
+/// Extract host from payload by trying HTTP Host first, then TLS SNI.
+pub(crate) fn extract_host(payload: &[u8]) -> Option<String> {
     extract_http_host(payload).or_else(|| extract_tls_sni(payload))
 }

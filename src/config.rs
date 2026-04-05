@@ -22,8 +22,16 @@ pub struct AppConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendOptions {
+    pub kind: TransparentBackendKind,
     pub dns: FakeDnsOptions,
     pub windivert: WinDivertBackendOptions,
+    pub tun: TunBackendOptions,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransparentBackendKind {
+    WinDivert,
+    Tun,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +43,19 @@ pub struct WinDivertBackendOptions {
 pub enum WinDivertLayerConfig {
     Network,
     NetworkForward,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TunBackendOptions {
+    pub name: String,
+    pub mtu: u16,
+    pub stack: TunStack,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TunStack {
+    System,
+    Smoltcp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,10 +79,14 @@ struct RawConfig {
 
 #[derive(Debug, Deserialize, Default)]
 struct RawBackendOptions {
+    #[serde(default = "default_backend_kind")]
+    kind: String,
     #[serde(default)]
     dns: RawFakeDnsOptions,
     #[serde(default)]
     windivert: RawWinDivertBackendOptions,
+    #[serde(default)]
+    tun: RawTunBackendOptions,
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,6 +99,26 @@ impl Default for RawWinDivertBackendOptions {
     fn default() -> Self {
         Self {
             layer: default_windivert_layer(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct RawTunBackendOptions {
+    #[serde(default = "default_tun_name")]
+    name: String,
+    #[serde(default = "default_tun_mtu")]
+    mtu: u16,
+    #[serde(default = "default_tun_stack")]
+    stack: String,
+}
+
+impl Default for RawTunBackendOptions {
+    fn default() -> Self {
+        Self {
+            name: default_tun_name(),
+            mtu: default_tun_mtu(),
+            stack: default_tun_stack(),
         }
     }
 }
@@ -183,8 +228,10 @@ impl TryFrom<RawBackendOptions> for BackendOptions {
 
     fn try_from(value: RawBackendOptions) -> Result<Self> {
         Ok(Self {
+            kind: parse_backend_kind(&value.kind)?,
             dns: FakeDnsOptions::try_from(value.dns)?,
             windivert: WinDivertBackendOptions::try_from(value.windivert)?,
+            tun: TunBackendOptions::try_from(value.tun)?,
         })
     }
 }
@@ -229,12 +276,51 @@ impl TryFrom<RawFakeDnsOptions> for FakeDnsOptions {
     }
 }
 
+impl TryFrom<RawTunBackendOptions> for TunBackendOptions {
+    type Error = anyhow::Error;
+
+    fn try_from(value: RawTunBackendOptions) -> Result<Self> {
+        if value.name.trim().is_empty() {
+            bail!("backend.tun.name must not be empty");
+        }
+        if value.mtu == 0 {
+            bail!("backend.tun.mtu must be greater than zero");
+        }
+
+        Ok(Self {
+            name: value.name,
+            mtu: value.mtu,
+            stack: parse_tun_stack(&value.stack)?,
+        })
+    }
+}
+
 fn default_backend_dns_listen_addr() -> String {
     "127.0.0.1:15353".to_string()
 }
 
+fn default_backend_kind() -> String {
+    if cfg!(target_os = "windows") {
+        "windivert".to_string()
+    } else {
+        "tun".to_string()
+    }
+}
+
 fn default_windivert_layer() -> String {
     "network".to_string()
+}
+
+fn default_tun_name() -> String {
+    "anymirror-tun".to_string()
+}
+
+fn default_tun_mtu() -> u16 {
+    1500
+}
+
+fn default_tun_stack() -> String {
+    "system".to_string()
 }
 
 fn default_fake_ipv4_range() -> String {
@@ -255,6 +341,28 @@ fn parse_windivert_layer(value: &str) -> Result<WinDivertLayerConfig> {
         "network-forward" | "network_forward" => Ok(WinDivertLayerConfig::NetworkForward),
         _ => bail!(
             "invalid backend.windivert.layer `{}` (expected `network` or `network-forward`)",
+            value
+        ),
+    }
+}
+
+fn parse_backend_kind(value: &str) -> Result<TransparentBackendKind> {
+    match value {
+        "windivert" => Ok(TransparentBackendKind::WinDivert),
+        "tun" | "tun-rs" | "tun_rs" => Ok(TransparentBackendKind::Tun),
+        _ => bail!(
+            "invalid backend.kind `{}` (expected `windivert` or `tun`)",
+            value
+        ),
+    }
+}
+
+fn parse_tun_stack(value: &str) -> Result<TunStack> {
+    match value {
+        "system" => Ok(TunStack::System),
+        "smoltcp" => Ok(TunStack::Smoltcp),
+        _ => bail!(
+            "invalid backend.tun.stack `{}` (expected `system` or `smoltcp`)",
             value
         ),
     }

@@ -9,11 +9,11 @@ use windivert_sys::{
     WinDivertClose, WinDivertHelperCalcChecksums, WinDivertRecv, WinDivertSend, WinDivertShutdown,
     WinDivertShutdownMode, address::WINDIVERT_ADDRESS,
 };
-use windows::Win32::Foundation::HANDLE;
+use windows_legacy::Win32::Foundation::HANDLE;
 
 use crate::traffic::shared::dns::FakeDnsServer;
+use crate::traffic::shared::intercept::TransparentCaptureKind;
 use crate::traffic::shared::nat::{TransparentNatTableV4, TransparentNatTableV6};
-use crate::traffic::windivert::config::TransparentCaptureKind;
 
 use super::packet::{handle_dns_query_packet, process_packet};
 

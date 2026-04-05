@@ -5,6 +5,7 @@ use axum::Router;
 use tokio::sync::mpsc;
 
 use crate::config::AppConfig;
+use crate::config::{BackendOptions, TransparentBackendKind, TunStack};
 use crate::rules::pool::LiveRuleSet;
 use crate::supervisors::{
     FakeDnsInstance, FakeDnsSupervisor, HttpListenerHandle, InterceptBackendHandle,
@@ -194,9 +195,12 @@ impl TransparentRuntimeHandles {
                 dns.shutdown().await;
             }
             self.dns = Some(
-                fake_dns_supervisor
-                    .start(next_config.backend.dns.clone(), live_rules.clone())
-                    .await?,
+                start_fake_dns_instance(
+                    fake_dns_supervisor,
+                    &next_config.backend,
+                    live_rules.clone(),
+                )
+                .await?,
             );
         }
 
@@ -250,9 +254,7 @@ async fn start_transparent_components(
     config: &AppConfig,
     live_rules: LiveRuleSet,
 ) -> Result<TransparentRuntimeHandles> {
-    let dns = fake_dns_supervisor
-        .start(config.backend.dns.clone(), live_rules)
-        .await?;
+    let dns = start_fake_dns_instance(fake_dns_supervisor, &config.backend, live_rules).await?;
     let http = listener_supervisor
         .start_http(app.clone(), config.listen_addr)
         .await?;
@@ -292,7 +294,7 @@ impl TransparentReloadPlan {
         let restart_tls = current_tls_port != next_tls_port;
         let restart_dns = current.backend.dns != next.backend.dns;
         let restart_intercept = restart_dns
-            || current.backend.windivert != next.backend.windivert
+            || current.backend != next.backend
             || current.listen_addr != next.listen_addr
             || current_tls_port != next_tls_port;
 
@@ -309,4 +311,28 @@ fn effective_tls_port(config: &AppConfig) -> u16 {
     config
         .tls_port
         .unwrap_or_else(|| config.listen_addr.port() + 1)
+}
+
+async fn start_fake_dns_instance(
+    fake_dns_supervisor: &FakeDnsSupervisor,
+    backend: &BackendOptions,
+    live_rules: LiveRuleSet,
+) -> Result<FakeDnsInstance> {
+    if should_start_fake_dns_runtime(backend) {
+        return fake_dns_supervisor
+            .start(backend.dns.clone(), live_rules)
+            .await;
+    }
+
+    let instance = fake_dns_supervisor.build(backend.dns.clone(), live_rules)?;
+    tracing::info!(
+        backend_kind = ?backend.kind,
+        tun_stack = ?backend.tun.stack,
+        "Skipping local fake DNS listener runtime because TUN smoltcp handles DNS in-tunnel"
+    );
+    Ok(instance)
+}
+
+fn should_start_fake_dns_runtime(backend: &BackendOptions) -> bool {
+    !(backend.kind == TransparentBackendKind::Tun && backend.tun.stack == TunStack::Smoltcp)
 }

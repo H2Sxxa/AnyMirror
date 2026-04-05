@@ -10,10 +10,10 @@ AnyMirror is a transparent L3 proxy and URL redirection tool written in Rust. It
 AnyMirror operates as a transparent fake-ip pipeline:
 
 1. **Allocating fake IPs:** `FakeDnsServer` returns fake A/AAAA records for configured origin hosts.
-2. **Intercepting fake-ip traffic:** The current intercept backend, WinDivert, only captures DNS queries and TCP traffic whose destination falls inside the fake-ip ranges.
-3. **Performing NAT redirection:** Captured connections are rewritten to the local transparent proxy listeners while a shared NAT table keeps the original destination mapping.
+2. **Intercepting fake-ip traffic:** `backend.kind: windivert` captures outbound DNS plus fake-ip TCP traffic directly; `backend.kind: tun` + `backend.tun.stack: smoltcp` routes fake-ip traffic through a TUN device and accepts TCP/UDP in user space.
+3. **Redirecting requests:** WinDivert rewrites captured flows to the local transparent proxy listeners while a shared NAT table keeps the original destination mapping; the smoltcp backend bridges accepted TCP streams into the existing local HTTP/TLS listeners and handles DNS in-tunnel.
 4. **Resolving mirror rules:** The local proxy reconstructs the original URL from HTTP Host or HTTPS SNI and decides whether to forward to a mirror or pass through to the original upstream.
-5. **Restoring responses:** The intercept backend rewrites proxy responses back to the original destination tuple before the client receives them.
+5. **Returning responses:** WinDivert rewrites proxy responses back to the original destination tuple before the client receives them; the smoltcp backend returns traffic through the user-space stack and TUN device.
 
 This approach stays transparent to applications while avoiding the classic "same real IP, different host" problem that appears in IP-only interception designs.
 
@@ -36,9 +36,13 @@ This approach stays transparent to applications while avoiding the classic "same
   - No WinDivert dependency
   - Works as a normal local HTTP/HTTPS proxy
 - Transparent mode:
-  - Windows 10 or later
-  - Administrator privileges
-  - WinDivert runtime files available beside the executable
+  - Administrator/root privileges or equivalent permission to create interception/TUN resources
+  - `backend.kind: windivert`
+    - Windows 10 or later
+    - WinDivert runtime files available beside the executable
+  - `backend.kind: tun` + `backend.tun.stack: smoltcp`
+    - A desktop OS with TUN support
+    - Windows currently auto-configures the TUN adapter DNS; other platforms still require platform-specific DNS setup
 
 ## Installation & Setup
 
@@ -103,14 +107,18 @@ The current runtime supports these combinations:
 | CLI mode | Backend | Platform | Notes |
 | --- | --- | --- | --- |
 | `explicit` | No intercept backend required | Cross-platform | Runs as a standard local HTTP/HTTPS proxy |
-| `transparent` | `backend.windivert` | Windows only | Uses fake-ip DNS plus WinDivert interception |
+| `transparent` | `backend.kind: windivert` | Windows only | Uses fake-ip DNS plus WinDivert interception |
+| `transparent` | `backend.kind: tun` + `backend.tun.stack: smoltcp` | Experimental desktop platforms with TUN support | Uses a TUN device plus a userspace smoltcp-based netstack |
 
-Transparent mode currently uses only the WinDivert intercept backend. Inside transparent mode:
+Transparent mode currently has two backend tracks:
+
+- `backend.kind: windivert`: the mature Windows backend
+- `backend.kind: tun` + `backend.tun.stack: smoltcp`: an experimental userspace netstack backend that bridges accepted TCP streams into the existing local HTTP/TLS listeners and resolves DNS in-tunnel
+
+Inside transparent mode, WinDivert still supports these layers:
 
 - `backend.windivert.layer: network`: intercept traffic originating from the local host
 - `backend.windivert.layer: network-forward`: intercept forwarded traffic for gateway-style setups such as WSL, VMs, or LAN clients
-
-On non-Windows platforms, transparent mode is not available and the process will fail fast with an explicit error.
 
 ## Configuration
 
@@ -120,13 +128,18 @@ Create a `config.yml` file with your redirection rules:
 listen: 127.0.0.1:8787
 # tls_port: 8788  # Optional: customize HTTPS proxy port (default: listen_port + 1)
 backend:
+  kind: windivert              # windivert or tun
   dns:
-    listen: 127.0.0.1:15353     # Local fake-ip DNS server; 5353 is commonly occupied by mDNS on Windows
+    listen: 127.0.0.1:53        # Used by the local fake DNS listener; tun+smoltcp handles DNS in-tunnel
     fake_ipv4_range: 198.18.0.0/16
     fake_ipv6_range: fd00:198:18::/48
     record_ttl_secs: 60
   windivert:
     layer: network              # network or network-forward
+  tun:
+    name: anymirror-tun         # TUN device name
+    mtu: 1500
+    stack: smoltcp              # system or smoltcp (system is currently TODO)
 
 includes:
   - match:
@@ -168,12 +181,28 @@ includes:
 
 - **listen:** Server address and port to bind to (e.g., `127.0.0.1:8787`)
 - **tls_port** (optional): Custom HTTPS proxy port. If not specified, defaults to `listen_port + 1`. For example, if `listen` is `127.0.0.1:8787`, the HTTPS port will be `8788` unless overridden here.
-- **backend.dns.listen**: Local fake-ip DNS server address. This is the local fake DNS listener used by transparent mode. Ordinary UDP/53 and TCP/53 traffic can be redirected into it by the intercept backend; pointing system or application DNS directly at it is mainly useful in special DNS environments.
+- **backend.kind**: Transparent intercept backend selector. If omitted, it defaults to `windivert` on Windows and `tun` on non-Windows platforms. Use `windivert` for the mature Windows backend, or `tun` for the experimental TUN backend.
+- **backend.dns.listen**: Local fake-ip DNS server address. This is the local fake DNS listener used by WinDivert and by any setup that still wants a localhost fake DNS service. The `tun + smoltcp` backend currently handles DNS in-tunnel and does not start this local listener runtime.
 - **backend.dns.fake_ipv4_range**: IPv4 fake-ip pool used for transparent redirection. WinDivert only intercepts TCP connections whose destination falls inside this range.
 - **backend.dns.fake_ipv6_range**: IPv6 fake-ip pool used for transparent redirection. WinDivert also intercepts TCP connections whose destination falls inside this range.
 - **backend.dns.record_ttl_secs**: TTL used for generated fake A and AAAA records.
 - **backend.windivert.layer**: WinDivert capture layer used in transparent mode. Use `network` for local traffic and `network-forward` for forwarded traffic such as WSL, VMs, or gateway scenarios.
+- **backend.tun.name**: TUN device name used by the TUN backend.
+- **backend.tun.mtu**: TUN MTU used by the TUN backend.
+- **backend.tun.stack**: TUN stack selector. `system` is currently TODO. `smoltcp` enables the experimental userspace TCP/IP stack backend.
 - **includes:** List of structured `match + action` rules (see Rule Matching Modes below)
+
+### Current TUN Notes
+
+- `backend.tun.stack: smoltcp` is still experimental.
+- The smoltcp backend bridges accepted TCP streams into the existing local HTTP/TLS listeners and resolves UDP/TCP DNS directly in-tunnel.
+- The current address reservation model is:
+  - first usable fake IPv4 / IPv6 address: TUN interface address
+  - second usable fake IPv4 / IPv6 address: TUN DNS address
+  - fake-ip allocation starts from the third usable address
+- On Windows, AnyMirror currently configures the TUN adapter DNS automatically to the reserved in-tunnel DNS address.
+- QUIC is still handled by dropping fake-ip UDP/443 traffic to force TCP/TLS fallback.
+- The `system` TUN stack is still TODO.
 
 ### Config Watch And Hot Reload
 
@@ -186,7 +215,7 @@ component-scoped runtime restarts. For the full reload plan and current limits, 
 
 There are two different DNS layers in AnyMirror:
 
-- `backend.dns.*`: Configures the local fake-ip DNS server used by transparent mode. This is not an upstream resolver mode selector.
+- `backend.dns.*`: Configures the fake-ip DNS state used by transparent mode. For WinDivert this also backs the local fake DNS listener. For `tun + smoltcp`, DNS is answered in-tunnel instead of through a localhost listener.
 - `upstream.dns.*`: Configures how the proxy resolves the upstream host for one specific mirror rule.
 
 Supported `upstream.dns.mode` values:
@@ -323,7 +352,8 @@ For the full transparent architecture, component responsibilities, and request f
 - [x] Extensible upstream options (`connect_ip`, `connect_host`, `sni`, and custom upstream DNS)
 - [x] CLI startup flow with config alias fallback (`--config mcdev` -> `config.mcdev.yml` etc.)
 - [x] Full config watch and runtime hot reload via `--watch-config`
-- [ ] TUN/TAP device support for cross-platform deployment (macOS, Linux) with user-space TCP/IP stack
+- [x] Experimental `backend.kind: tun` + `backend.tun.stack: smoltcp` backend with in-tunnel DNS handling
+- [ ] Production-ready cross-platform TUN/TAP support, including the `system` stack and platform-native hosts
 - [ ] Encrypted DNS interception for DoH/DoT
 - [ ] Advanced structured matching (`method`, richer path/query constraints, optional wildcard host rules)
 - [ ] Built-in rule presets/import composition

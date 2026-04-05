@@ -10,10 +10,10 @@ AnyMirror 是一款用 Rust 编写的透明 L3 代理与 URL 重定向工具，�
 AnyMirror 现在采用基于 fake-ip 的透明代理链路：
 
 1. **分配 fake-ip：** `FakeDnsServer` 为命中规则的 origin host 返回 fake A/AAAA 记录。
-2. **拦截 fake-ip 流量：** 当前的拦截后端是 WinDivert，它只处理 DNS 查询和目标地址落在 fake-ip 网段中的 TCP 流量。
-3. **执行 NAT 重定向：** 被截获的连接会被改写到本地透明代理监听端口，同时共享 NAT 表会保存原始目标信息。
+2. **拦截 fake-ip 流量：** `backend.kind: windivert` 会直接截获出站 DNS 和 fake-ip TCP；`backend.kind: tun` + `backend.tun.stack: smoltcp` 会把 fake-ip 流量导入 TUN，并在用户态接受 TCP/UDP。
+3. **重定向请求：** WinDivert 会把截获到的流量改写到本地透明代理监听端口，同时共享 NAT 表保存原始目标；smoltcp 后端会把接收到的 TCP 流桥接到现有本地 HTTP/TLS listener，并在 TUN 内直接处理 DNS。
 4. **解析转发规则：** 本地代理根据 HTTP Host 或 HTTPS SNI 还原原始 URL，再决定走镜像还是回源直连。
-5. **还原响应：** 拦截后端在响应返回客户端之前，根据共享 NAT 表把代理响应改回原始目标四元组。
+5. **返回响应：** WinDivert 会在响应返回客户端前根据共享 NAT 表还原原始目标四元组；smoltcp 后端则通过用户态协议栈和 TUN 设备把流量送回客户端。
 
 这种方式既保持了对应用透明，也避免了传统“按真实 IP 拦截”方案里“同一真实 IP 下多个 host 串流量”的问题。
 
@@ -36,9 +36,13 @@ AnyMirror 现在采用基于 fake-ip 的透明代理链路：
   - 不依赖 WinDivert
   - 作为普通本地 HTTP/HTTPS 代理运行
 - 透明代理模式：
-  - Windows 10 或更高版本
-  - 管理员权限
-  - 可执行文件同目录下提供 WinDivert 运行时文件
+  - 需要管理员/root 权限或等价能力来创建拦截/TUN 资源
+  - `backend.kind: windivert`
+    - Windows 10 或更高版本
+    - 可执行文件同目录下提供 WinDivert 运行时文件
+  - `backend.kind: tun` + `backend.tun.stack: smoltcp`
+    - 需要支持 TUN 的桌面操作系统
+    - Windows 当前会自动给 TUN 适配器配置 DNS；其他平台仍然需要平台侧 DNS 配置
 
 ## 安装与配置
 
@@ -101,14 +105,18 @@ anymirror --mode transparent --config config.yml
 | CLI 模式 | 后端 | 平台 | 说明 |
 | --- | --- | --- | --- |
 | `explicit` | 不需要拦截后端 | 跨平台 | 作为标准本地 HTTP/HTTPS 代理运行 |
-| `transparent` | `backend.windivert` | 仅 Windows | 使用 fake-ip DNS 加 WinDivert 拦截 |
+| `transparent` | `backend.kind: windivert` | 仅 Windows | 使用 fake-ip DNS 加 WinDivert 拦截 |
+| `transparent` | `backend.kind: tun` + `backend.tun.stack: smoltcp` | 支持 TUN 的桌面平台，当前仍属实验性 | 使用 TUN 设备加基于 smoltcp 的用户态网络栈 |
 
-透明模式当前只支持 WinDivert 拦截后端。透明模式内部还有两种 WinDivert layer：
+透明模式当前有两条后端线：
+
+- `backend.kind: windivert`：成熟的 Windows 后端
+- `backend.kind: tun` + `backend.tun.stack: smoltcp`：实验性的用户态网络栈后端，会把接收到的 TCP 流桥接到现有本地 HTTP/TLS listener，并在 TUN 内直接处理 DNS
+
+其中 WinDivert 后端内部还有两种 layer：
 
 - `backend.windivert.layer: network`：拦截本机发起的流量
 - `backend.windivert.layer: network-forward`：拦截转发流量，适用于 WSL、虚拟机或局域网网关场景
-
-在非 Windows 平台上，透明模式不可用，程序会直接返回明确错误。
 
 ## 配置文件
 
@@ -118,13 +126,18 @@ anymirror --mode transparent --config config.yml
 listen: 127.0.0.1:8787
 # tls_port: 8788  # 可选：自定义 HTTPS 代理端口（如不指定，默认为 listen_port + 1）
 backend:
+  kind: windivert              # windivert 或 tun
   dns:
-    listen: 127.0.0.1:15353     # 本地 fake-ip DNS 服务监听地址，Windows 上 5353 往往会被 mDNS 占用
+    listen: 127.0.0.1:53        # 本地 fake DNS listener 地址；tun+smoltcp 会在 TUN 内处理 DNS
     fake_ipv4_range: 198.18.0.0/16
     fake_ipv6_range: fd00:198:18::/48
     record_ttl_secs: 60
   windivert:
     layer: network              # network 或 network-forward
+  tun:
+    name: anymirror-tun         # TUN 设备名
+    mtu: 1500
+    stack: smoltcp              # system 或 smoltcp（system 当前仍是 TODO）
 
 includes:
   - match:
@@ -166,12 +179,28 @@ includes:
 
 - **listen：** 代理服务绑定的地址和端口（例如 `127.0.0.1:8787`）
 - **tls_port** （可选）：自定义 HTTPS 代理端口。如不指定，默认为 `listen_port + 1`。例如 `listen` 为 `127.0.0.1:8787` 时，HTTPS 端口默认为 `8788`，除非在此指定其他端口。
-- **backend.dns.listen**：本地 fake-ip DNS 服务地址。它是透明模式使用的本地 fake DNS listener。普通 UDP/53 和 TCP/53 流量可以由拦截后端导入这里；只有在特殊 DNS 环境下，才更需要显式把系统或应用 DNS 指向这个地址。
+- **backend.kind**：透明拦截后端选择器。如不填写，Windows 默认是 `windivert`，非 Windows 平台默认是 `tun`。`windivert` 是成熟的 Windows 后端；`tun` 是实验性的 TUN 后端入口。
+- **backend.dns.listen**：本地 fake-ip DNS 服务地址。WinDivert 和仍然需要 localhost fake DNS 的场景会用到它；`tun + smoltcp` 当前会在 TUN 内直接回答 DNS，不会启动这个本地 listener runtime。
 - **backend.dns.fake_ipv4_range**：透明重定向使用的 IPv4 fake-ip 地址池。WinDivert 只会拦截目标地址落在这个网段内的 TCP 连接。
 - **backend.dns.fake_ipv6_range**：透明重定向使用的 IPv6 fake-ip 地址池。WinDivert 也会拦截目标地址落在这个网段内的 TCP 连接。
 - **backend.dns.record_ttl_secs**：生成 fake A 和 AAAA 记录时使用的 TTL。
 - **backend.windivert.layer**：透明模式下 WinDivert 使用的捕获层。`network` 用于本机流量，`network-forward` 用于 WSL、虚拟机或网关场景下的转发流量。
+- **backend.tun.name**：TUN 后端使用的设备名。
+- **backend.tun.mtu**：TUN 后端使用的 MTU。
+- **backend.tun.stack**：TUN 栈选择器。`system` 目前还是 TODO；`smoltcp` 会启用实验性的用户态 TCP/IP 栈后端。
 - **includes：** 结构化 `match + action` 规则列表（见下方规则匹配模式）
+
+### 当前 TUN 说明
+
+- `backend.tun.stack: smoltcp` 目前仍然是实验性实现。
+- 当前 smoltcp 后端会把接收到的 TCP 流桥接到现有本地 HTTP/TLS listener，并在 TUN 内直接回答 UDP/TCP DNS。
+- 当前地址保留模型是：
+  - fake-ip 网段中的第一个可用 IPv4 / IPv6 地址：TUN 接口地址
+  - 第二个可用 IPv4 / IPv6 地址：TUN DNS 地址
+  - fake-ip 分配从第三个可用地址开始
+- Windows 当前会自动把 TUN 适配器 DNS 配到保留的 TUN DNS 地址。
+- QUIC 当前仍然通过丢弃 fake-ip `UDP/443` 来强制客户端回退到 TCP/TLS。
+- `system` TUN 栈目前还是 TODO。
 
 ### 配置监视与热重载
 
@@ -181,7 +210,7 @@ includes:
 
 AnyMirror 里有两层不同的 DNS 配置：
 
-- `backend.dns.*`：配置透明模式使用的本地 fake-ip DNS 服务。这一层不是“上游解析器模式”的开关。
+- `backend.dns.*`：配置透明模式里的 fake-ip DNS 状态。对 WinDivert 来说，这一层也驱动本地 fake DNS listener；对 `tun + smoltcp` 来说，DNS 会在 TUN 内直接回答，而不是通过 localhost listener。
 - `upstream.dns.*`：配置某一条镜像规则在连接 upstream 时应当如何解析 upstream host。
 
 当前支持的 `upstream.dns.mode`：
@@ -317,7 +346,8 @@ FakeDnsServer -> Intercept Backend -> Local Proxy -> Mirror/Direct upstream
 - [x] 可扩展的 upstream 配置（`connect_ip`、`connect_host`、`sni` 与自定义 upstream DNS）
 - [x] CLI 启动参数支持配置 alias fallback（如 `--config mcdev` 自动解析到 `config.mcdev.yml`）
 - [x] 通过 `--watch-config` 实现完整配置监视与运行时热重载
-- [ ] TUN/TAP 设备支持，用于跨平台部署（macOS、Linux），集成用户态 TCP/IP 协议栈
+- [x] 实验性的 `backend.kind: tun` + `backend.tun.stack: smoltcp` 后端，支持站内 DNS 解析
+- [ ] 生产可用的跨平台 TUN/TAP 支持，包括 `system` 栈和平台原生宿主
 - [ ] DoH / DoT 等加密 DNS 的拦截支持
 - [ ] 更强的结构化匹配（`method`、更丰富的 path/query 约束、可选通配 host 规则）
 - [ ] 内置规则预设与规则集组合

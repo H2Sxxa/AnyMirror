@@ -43,11 +43,11 @@ impl FakeIpStore {
             inner: Arc::new(Mutex::new(FakeIpStoreInner {
                 domain_to_entry_v4: HashMap::new(),
                 ip_to_domain_v4: HashMap::new(),
-                next_candidate_v4: first_usable_ipv4(fake_ipv4_range),
+                next_candidate_v4: first_allocatable_ipv4(fake_ipv4_range),
                 fake_ipv4_range,
                 domain_to_entry_v6: HashMap::new(),
                 ip_to_domain_v6: HashMap::new(),
-                next_candidate_v6: first_usable_ipv6(fake_ipv6_range),
+                next_candidate_v6: first_allocatable_ipv6(fake_ipv6_range),
                 fake_ipv6_range,
             })),
         }
@@ -135,7 +135,7 @@ impl FakeIpStore {
 }
 
 fn allocate_next_ipv4(inner: &mut FakeIpStoreInner) -> Option<Ipv4Addr> {
-    let first = first_usable_ipv4(inner.fake_ipv4_range);
+    let first = first_allocatable_ipv4(inner.fake_ipv4_range);
     let last = last_usable_ipv4(inner.fake_ipv4_range)?;
     if first > last {
         return None;
@@ -158,7 +158,7 @@ fn allocate_next_ipv4(inner: &mut FakeIpStoreInner) -> Option<Ipv4Addr> {
 }
 
 fn allocate_next_ipv6(inner: &mut FakeIpStoreInner) -> Option<Ipv6Addr> {
-    let first = first_usable_ipv6(inner.fake_ipv6_range);
+    let first = first_allocatable_ipv6(inner.fake_ipv6_range);
     let last = last_usable_ipv6(inner.fake_ipv6_range)?;
     if first > last {
         return None;
@@ -213,6 +213,10 @@ fn first_usable_ipv4(fake_ipv4_range: Ipv4Net) -> u32 {
     u32::from(fake_ipv4_range.network()).saturating_add(1)
 }
 
+fn first_allocatable_ipv4(fake_ipv4_range: Ipv4Net) -> u32 {
+    first_usable_ipv4(fake_ipv4_range).saturating_add(2)
+}
+
 fn last_usable_ipv4(fake_ipv4_range: Ipv4Net) -> Option<u32> {
     let broadcast = fake_ipv4_range.broadcast();
     let broadcast_u32 = u32::from(broadcast);
@@ -237,6 +241,10 @@ fn advance_ipv4_candidate(candidate: u32, first: u32, last: u32) -> u32 {
 
 fn first_usable_ipv6(fake_ipv6_range: Ipv6Net) -> u128 {
     ipv6_to_u128(fake_ipv6_range.network()).saturating_add(1)
+}
+
+fn first_allocatable_ipv6(fake_ipv6_range: Ipv6Net) -> u128 {
+    first_usable_ipv6(fake_ipv6_range).saturating_add(2)
 }
 
 fn last_usable_ipv6(fake_ipv6_range: Ipv6Net) -> Option<u128> {
@@ -293,6 +301,8 @@ mod tests {
             .allocate_or_refresh_ipv4("example.com", Duration::from_secs(60), now)
             .unwrap();
 
+        assert_ne!(fake_ip.to_string(), "198.18.0.1");
+        assert_ne!(fake_ip.to_string(), "198.18.0.2");
         let resolved = store.resolve_domain(IpAddr::V4(fake_ip), now).unwrap();
         assert_eq!(resolved, "example.com");
     }
@@ -328,5 +338,7 @@ mod tests {
         let resolved = store.resolve_domain(IpAddr::V6(fake_ip), now).unwrap();
         assert_eq!(resolved, "example.com");
         assert_ne!(fake_ip, Ipv6Addr::UNSPECIFIED);
+        assert_ne!(fake_ip.to_string(), "fd00:198:20::1");
+        assert_ne!(fake_ip.to_string(), "fd00:198:20::2");
     }
 }

@@ -5,3 +5,7 @@
 *.dll
 *.lib
 *.sys
+*.exe
+vendor/**/.cargo_vcs_info.json
+vendor/**/.cargo-ok
+vendor/**/Cargo.toml.orig

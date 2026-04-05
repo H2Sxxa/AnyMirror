@@ -9,26 +9,10 @@ use ipnet::{Ipv4Net, Ipv6Net};
 use windivert::prelude::{WinDivertFlags, WinDivertParam};
 
 use crate::traffic::shared::dns::FakeDnsServer;
+use crate::traffic::shared::intercept::TransparentCaptureKind;
 use crate::traffic::shared::nat::{
     TransparentNatTableV4, TransparentNatTableV6, new_transparent_nat_table,
 };
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
-pub enum TransparentCaptureKind {
-    TcpRequestRedirect,
-    TcpDnsRedirect,
-    TcpProxyResponse,
-    DnsResponder,
-    UdpQuicDrop,
-    Generic,
-}
-
-impl Default for TransparentCaptureKind {
-    fn default() -> Self {
-        Self::Generic
-    }
-}
 
 /// Build- and runtime-facing configuration for a future WinDivert capture backend.
 #[derive(Debug, Clone)]

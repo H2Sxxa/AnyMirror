@@ -6,17 +6,17 @@ use anyhow::{Context, Result};
 use ipnet::{Ipv4Net, Ipv6Net};
 use tokio::task::JoinHandle;
 use windivert_sys::{WinDivertOpen, WinDivertSetParam};
-use windows::Win32::Foundation::HANDLE;
+use windows_legacy::Win32::Foundation::HANDLE;
 
 use crate::config::{WinDivertBackendOptions, WinDivertLayerConfig};
 use crate::traffic::TransparentInterceptRuntimeConfig;
 use crate::traffic::shared::dns::FakeDnsServer;
+use crate::traffic::shared::intercept::TransparentCaptureKind;
 use crate::traffic::shared::nat::{
     TransparentNatTableV4, TransparentNatTableV6, new_transparent_nat_table, spawn_nat_cleanup_task,
 };
 use crate::traffic::windivert::config::{
-    RuntimeBackend, TransparentCaptureKind, WinDivertConfig, WinDivertLayer, WinDivertRuntime,
-    WindowsBackendPlan,
+    RuntimeBackend, WinDivertConfig, WinDivertLayer, WinDivertRuntime, WindowsBackendPlan,
 };
 use crate::traffic::windivert::filters;
 use crate::workers::Workers;

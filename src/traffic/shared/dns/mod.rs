@@ -96,6 +96,13 @@ impl FakeDnsServer {
         }
     }
 
+    pub async fn resolve_request(&self, request_bytes: &[u8]) -> Result<Vec<u8>> {
+        let request = Message::from_vec(request_bytes).context("invalid dns request packet")?;
+        let queries = DnsLookupQuery::from_message(&request);
+        let resolution = self.state.resolve_queries(&queries).await?;
+        resolution.to_message_bytes(&request)
+    }
+
     pub async fn start_runtime(&self, workers: Workers) -> Result<FakeDnsRuntimeHandle> {
         let udp_socket = UdpSocket::bind(self.state.options.listen_addr)
             .await

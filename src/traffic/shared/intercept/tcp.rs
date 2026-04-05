@@ -3,11 +3,6 @@ use std::time::Instant;
 
 use etherparse::TcpHeaderSlice;
 use ipnet::{Ipv4Net, Ipv6Net};
-use windivert::{
-    address::WinDivertAddress,
-    layer::{ForwardLayer, NetworkLayer},
-};
-use windivert_sys::address::WINDIVERT_ADDRESS;
 
 use crate::traffic::shared::dns::FakeDnsServer;
 use crate::traffic::shared::family::{IpPacketFamily, v4::Ipv4PacketFamily, v6::Ipv6PacketFamily};
@@ -15,9 +10,9 @@ use crate::traffic::shared::nat::{
     NAT_ENTRY_CLOSING_TTL, NAT_ENTRY_ESTABLISHED_TTL, TransparentNatTable, TransparentNatTableV4,
     TransparentNatTableV6, touch_nat_mapping, upsert_nat_mapping,
 };
-use crate::traffic::windivert::payload::extract_host;
+use crate::traffic::shared::sniff::extract_host;
 
-use super::PacketDisposition;
+use super::{PacketDisposition, PacketMetadata};
 
 trait FamilyNatOps: IpPacketFamily {
     fn upsert_nat(
@@ -88,7 +83,7 @@ enum DetectedTcpFamily {
     Ipv6(usize),
 }
 
-pub(super) fn packet_ports(data: &[u8], ip_header_len: usize) -> Option<(u16, u16)> {
+pub(crate) fn packet_ports(data: &[u8], ip_header_len: usize) -> Option<(u16, u16)> {
     (data.len() >= ip_header_len + 4).then(|| {
         (
             u16::from_be_bytes([data[ip_header_len], data[ip_header_len + 1]]),
@@ -97,7 +92,7 @@ pub(super) fn packet_ports(data: &[u8], ip_header_len: usize) -> Option<(u16, u1
     })
 }
 
-pub(super) fn handle_dns_tcp_packet<A>(
+pub(crate) fn handle_dns_tcp_packet<A>(
     data: &mut [u8],
     address: &mut A,
     local_dns_port: u16,
@@ -105,7 +100,7 @@ pub(super) fn handle_dns_tcp_packet<A>(
     nat_table_v6: &TransparentNatTableV6,
 ) -> PacketDisposition
 where
-    A: SetOutboundFlag,
+    A: PacketMetadata,
 {
     match detect_tcp_family(data) {
         Some(DetectedTcpFamily::Ipv4(ip_header_len)) => {
@@ -130,7 +125,7 @@ where
     }
 }
 
-pub(super) fn handle_request_packet<A>(
+pub(crate) fn handle_request_packet<A>(
     data: &mut [u8],
     address: &mut A,
     fake_dns_server: Option<&FakeDnsServer>,
@@ -142,7 +137,7 @@ pub(super) fn handle_request_packet<A>(
     tls_port: u16,
 ) -> PacketDisposition
 where
-    A: SetOutboundFlag,
+    A: PacketMetadata,
 {
     match detect_tcp_family(data) {
         Some(DetectedTcpFamily::Ipv4(ip_header_len)) => {
@@ -173,7 +168,7 @@ where
     }
 }
 
-pub(super) fn handle_proxy_response_packet<A>(
+pub(crate) fn handle_proxy_response_packet<A>(
     data: &mut [u8],
     address: &mut A,
     nat_table_v4: &TransparentNatTableV4,
@@ -183,7 +178,7 @@ pub(super) fn handle_proxy_response_packet<A>(
     local_dns_port: u16,
 ) -> PacketDisposition
 where
-    A: SetOutboundFlag,
+    A: PacketMetadata,
 {
     match detect_tcp_family(data) {
         Some(DetectedTcpFamily::Ipv4(ip_header_len)) => {
@@ -307,7 +302,7 @@ fn handle_request_packet_impl<A, F>(
     tls_port: u16,
 ) -> PacketDisposition
 where
-    A: SetOutboundFlag,
+    A: PacketMetadata,
     F: FamilyNatOps,
     F::Addr: Copy + Eq + Hash,
 {
@@ -330,7 +325,7 @@ where
             nat_table,
             packet,
             now,
-            "WinDivert transparent NAT table lock poisoned",
+            "Transparent NAT table lock poisoned while redirecting fake-ip request",
         ) {
             return PacketDisposition::Pass;
         }
@@ -388,7 +383,7 @@ fn handle_dns_tcp_packet_impl<A, F>(
     nat_table: &TransparentNatTable<F::Addr>,
 ) -> PacketDisposition
 where
-    A: SetOutboundFlag,
+    A: PacketMetadata,
     F: FamilyNatOps,
     F::Addr: Copy + Eq + Hash,
 {
@@ -401,7 +396,7 @@ where
             nat_table,
             packet,
             Instant::now(),
-            "WinDivert DNS NAT table lock poisoned",
+            "Transparent NAT table lock poisoned while redirecting DNS-over-TCP request",
         ) {
             return PacketDisposition::Pass;
         }
@@ -430,7 +425,7 @@ fn handle_proxy_response_packet_impl<A, F>(
     local_dns_port: u16,
 ) -> PacketDisposition
 where
-    A: SetOutboundFlag,
+    A: PacketMetadata,
     F: FamilyNatOps,
     F::Addr: Copy + Eq + Hash,
 {
@@ -462,27 +457,5 @@ fn nat_expiration(now: Instant, is_closing: bool) -> Instant {
         NAT_ENTRY_CLOSING_TTL
     } else {
         NAT_ENTRY_ESTABLISHED_TTL
-    }
-}
-
-pub(in crate::traffic::windivert::runtime) trait SetOutboundFlag {
-    fn set_outbound_flag(&mut self, outbound: bool);
-}
-
-impl SetOutboundFlag for WinDivertAddress<NetworkLayer> {
-    fn set_outbound_flag(&mut self, outbound: bool) {
-        self.set_outbound(outbound);
-    }
-}
-
-impl SetOutboundFlag for WinDivertAddress<ForwardLayer> {
-    fn set_outbound_flag(&mut self, outbound: bool) {
-        self.set_outbound(outbound);
-    }
-}
-
-impl SetOutboundFlag for WINDIVERT_ADDRESS {
-    fn set_outbound_flag(&mut self, outbound: bool) {
-        self.set_outbound(outbound);
     }
 }

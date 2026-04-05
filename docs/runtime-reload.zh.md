@@ -32,14 +32,18 @@
 - `tls_port`
   - 重启 TLS listener 和拦截后端
 - `backend.dns.listen`
-  - 重启 fake DNS 服务和拦截后端
+  - 重启 fake DNS 状态/runtime 和拦截后端
 - `backend.dns.fake_ipv4_range`
-  - 重启 fake DNS 服务和拦截后端
+  - 重启 fake DNS 状态/runtime 和拦截后端
 - `backend.dns.fake_ipv6_range`
-  - 重启 fake DNS 服务和拦截后端
+  - 重启 fake DNS 状态/runtime 和拦截后端
 - `backend.dns.record_ttl_secs`
-  - 重启 fake DNS 服务和拦截后端
+  - 重启 fake DNS 状态/runtime 和拦截后端
+- `backend.kind`
+  - 只重启拦截后端
 - `backend.windivert.*`
+  - 只重启拦截后端
+- `backend.tun.*`
   - 只重启拦截后端
 
 ## 运行时模型
@@ -59,7 +63,7 @@
 
 - 重载仍然是顺序重建，不是 generation overlap。
 - 组件重启时可能会有一个很短的中断窗口。
-- fake DNS 服务或拦截后端重建时，已有透明连接可能会被重置。
+- fake DNS 状态/runtime 或拦截后端重建时，已有透明连接可能会被重置。
 - 当前仍然不支持对客户端 DoH / DoT 做加密 DNS 拦截。
 
 ## 相关文件
