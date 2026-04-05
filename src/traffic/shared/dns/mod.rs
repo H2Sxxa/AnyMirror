@@ -1,4 +1,6 @@
 mod fake_ip;
+mod query;
+mod resolution;
 
 use std::{
     net::{IpAddr, SocketAddr},
@@ -9,16 +11,15 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use hickory_proto::{
-    op::{Header, LowerQuery, Message, MessageType, ResponseCode},
+    op::{Message, ResponseCode},
     rr::{
         Name, RData, Record, RecordType,
         rdata::{A, AAAA},
     },
 };
 use hickory_resolver::{ResolveError, TokioResolver};
-use hickory_server::{
-    authority::MessageResponseBuilder,
-    server::{Request, RequestHandler, ResponseHandler, ResponseInfo, ServerFuture},
+use hickory_server::server::{
+    Request, RequestHandler, ResponseHandler, ResponseInfo, ServerFuture,
 };
 use tokio::net::UdpSocket;
 use tokio::sync::oneshot;
@@ -248,146 +249,5 @@ impl RequestHandler for FakeDnsHandler {
         resolution
             .send_hickory_response(request, &mut response_handle)
             .await
-    }
-}
-
-impl DnsLookupQuery {
-    fn from_message(request: &Message) -> Vec<Self> {
-        request
-            .queries()
-            .iter()
-            .map(|query| Self::new(&query.name().to_utf8(), query.query_type()))
-            .collect()
-    }
-
-    fn from_lower_queries(queries: &[LowerQuery]) -> Vec<Self> {
-        queries
-            .iter()
-            .map(|query| Self::new(&query.name().to_utf8(), query.query_type()))
-            .collect()
-    }
-
-    fn new(name: &str, record_type: RecordType) -> Self {
-        Self {
-            name: Self::normalize_name(name),
-            record_type,
-        }
-    }
-
-    fn build_record(&self, ttl: Duration, data: RData) -> Result<Record> {
-        let record_name = Name::from_ascii(&self.name)
-            .with_context(|| format!("invalid DNS record name `{}`", self.name))?;
-        Ok(Record::from_rdata(record_name, ttl.as_secs() as u32, data))
-    }
-
-    fn normalize_name(name: &str) -> String {
-        name.trim_end_matches('.').to_ascii_lowercase()
-    }
-}
-
-impl DnsResolution {
-    fn from_answers(answers: Vec<Record>) -> Self {
-        Self {
-            response_code: ResponseCode::NoError,
-            answers,
-        }
-    }
-
-    fn from_error(response_code: ResponseCode) -> Self {
-        Self {
-            response_code,
-            answers: Vec::new(),
-        }
-    }
-
-    async fn send_hickory_response<R: ResponseHandler>(
-        &self,
-        request: &Request,
-        response_handle: &mut R,
-    ) -> ResponseInfo {
-        let builder = MessageResponseBuilder::from_message_request(request);
-        let fallback_header = Self::build_response_header(request.header(), ResponseCode::ServFail);
-
-        let send_result = if self.response_code != ResponseCode::NoError {
-            response_handle
-                .send_response(builder.error_msg(request.header(), self.response_code))
-                .await
-        } else if self.answers.is_empty() {
-            response_handle
-                .send_response(builder.build_no_records(Self::build_response_header(
-                    request.header(),
-                    ResponseCode::NoError,
-                )))
-                .await
-        } else {
-            let empty_records: [Record; 0] = [];
-            response_handle
-                .send_response(builder.build(
-                    Self::build_response_header(request.header(), ResponseCode::NoError),
-                    self.answers.iter(),
-                    empty_records.iter(),
-                    empty_records.iter(),
-                    empty_records.iter(),
-                ))
-                .await
-        };
-
-        match send_result {
-            Ok(info) => info,
-            Err(error) => {
-                tracing::warn!(?error, src = %request.src(), "Failed to send fake DNS response");
-                fallback_header.into()
-            }
-        }
-    }
-
-    fn to_message_bytes(&self, request: &Message) -> Result<Vec<u8>> {
-        if self.response_code != ResponseCode::NoError {
-            return Self::build_error_message_bytes(request, self.response_code);
-        }
-
-        let mut response = Self::build_response_message(request);
-        for answer in &self.answers {
-            response.add_answer(answer.clone());
-        }
-
-        response
-            .to_vec()
-            .context("failed to serialize fake DNS response")
-    }
-
-    fn build_error_message_bytes(
-        request: &Message,
-        response_code: ResponseCode,
-    ) -> Result<Vec<u8>> {
-        let mut response = Self::build_response_message(request);
-        response.set_response_code(response_code);
-        response
-            .to_vec()
-            .context("failed to serialize fake DNS error response")
-    }
-
-    fn build_response_message(request: &Message) -> Message {
-        let mut response = Message::new();
-        response
-            .set_id(request.id())
-            .set_message_type(MessageType::Response)
-            .set_op_code(request.op_code())
-            .set_recursion_desired(request.recursion_desired())
-            .set_recursion_available(true)
-            .set_response_code(ResponseCode::NoError);
-        for query in request.queries() {
-            response.add_query(query.clone());
-        }
-        response
-    }
-
-    fn build_response_header(request_header: &Header, response_code: ResponseCode) -> Header {
-        let mut header = request_header.clone();
-        header
-            .set_message_type(MessageType::Response)
-            .set_recursion_available(true)
-            .set_response_code(response_code);
-        header
     }
 }
