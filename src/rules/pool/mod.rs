@@ -1,39 +1,40 @@
-mod index;
-mod resolve;
-mod tree;
+mod compiled;
+mod runtime;
+mod trie;
 
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use url::Url;
 
-use self::index::RulePool;
-use super::types::{RejectRuleAction, ResolvedRuleAction, Rule, RuleActionKind, UpstreamPlan};
+use self::compiled::CompiledRuleIndex;
+use super::model::{RejectRuleAction, ResolvedRuleAction, Rule, RuleActionKind, UpstreamPlan};
 
 #[derive(Debug, Clone)]
-pub struct Rules {
+pub struct RuleSet {
     entries: Vec<Rule>,
-    pool: RulePool,
+    index: CompiledRuleIndex,
 }
 
 #[derive(Debug, Clone)]
-pub struct LiveRules {
-    inner: Arc<RwLock<Arc<Rules>>>,
+pub struct LiveRuleSet {
+    inner: Arc<ArcSwap<RuleSet>>,
 }
 
 #[derive(Debug, Clone)]
-pub struct RuleMatch<'a> {
+pub struct MatchedRule<'a> {
     pub action: ResolvedRuleAction,
     pub rule: &'a Rule,
 }
 
-impl Rules {
+impl RuleSet {
     pub(crate) fn new(entries: Vec<Rule>) -> Self {
-        let pool = RulePool::compile(&entries);
-        Self { entries, pool }
+        let index = CompiledRuleIndex::compile(&entries);
+        Self { entries, index }
     }
 
-    pub fn resolve(&self, original: &Url) -> Option<RuleMatch<'_>> {
-        self.pool.resolve(&self.entries, original)
+    pub fn resolve(&self, original: &Url) -> Option<MatchedRule<'_>> {
+        self.index.resolve(&self.entries, original)
     }
 
     pub fn len(&self) -> usize {
@@ -45,28 +46,24 @@ impl Rules {
     }
 
     pub fn matches_dns_host(&self, host: &str) -> bool {
-        self.pool.matches_dns_host(host)
+        self.index.matches_dns_host(host)
     }
 }
 
-impl LiveRules {
-    pub fn new(rules: Rules) -> Self {
+impl LiveRuleSet {
+    pub fn new(rules: RuleSet) -> Self {
         Self {
-            inner: Arc::new(RwLock::new(Arc::new(rules))),
+            inner: Arc::new(ArcSwap::from_pointee(rules)),
         }
     }
 
-    pub fn snapshot(&self) -> Arc<Rules> {
-        self.inner
-            .read()
-            .expect("live rules read lock poisoned")
-            .clone()
+    pub fn snapshot(&self) -> Arc<RuleSet> {
+        self.inner.load_full()
     }
 
-    pub fn replace(&self, rules: Rules) -> usize {
+    pub fn replace(&self, rules: RuleSet) -> usize {
         let rule_count = rules.len();
-        let mut guard = self.inner.write().expect("live rules write lock poisoned");
-        *guard = Arc::new(rules);
+        self.inner.store(Arc::new(rules));
         rule_count
     }
 
@@ -75,7 +72,7 @@ impl LiveRules {
     }
 }
 
-impl RuleMatch<'_> {
+impl MatchedRule<'_> {
     pub fn action_kind(&self) -> RuleActionKind {
         self.action.kind()
     }

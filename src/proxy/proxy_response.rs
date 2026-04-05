@@ -1,12 +1,12 @@
 use axum::{body::Body, http::HeaderName, response::Response};
 
-use crate::rules::pool::RuleMatch;
+use crate::rules::pool::MatchedRule;
 
 use super::{headers::is_forwardable_header, responses::rule_kind_name};
 
 pub(super) fn build_proxy_response(
     upstream: hyper::Response<hyper::body::Incoming>,
-    matched: RuleMatch<'_>,
+    matched: MatchedRule<'_>,
     source: Option<&str>,
 ) -> Response {
     let target = matched

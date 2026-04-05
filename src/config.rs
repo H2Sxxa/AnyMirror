@@ -9,15 +9,15 @@ use anyhow::{Context, Result, bail};
 use ipnet::{Ipv4Net, Ipv6Net};
 use serde::Deserialize;
 
-use crate::rules::pool::Rules;
-use crate::rules::schema::RawRule;
+use crate::rules::pool::RuleSet;
+use crate::rules::schema::RuleSchema;
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub listen_addr: SocketAddr,
     pub tls_port: Option<u16>,
     pub backend: BackendOptions,
-    pub rules: Rules,
+    pub rules: RuleSet,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,7 +53,7 @@ struct RawConfig {
     #[serde(default)]
     backend: RawBackendOptions,
     #[serde(default, alias = "rules")]
-    includes: Vec<RawRule>,
+    includes: Vec<RuleSchema>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -112,7 +112,7 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<AppConfig> {
         .listen
         .parse()
         .with_context(|| format!("invalid listen address `{}`", parsed.listen))?;
-    let rules = Rules::try_from(parsed.includes)?;
+    let rules = RuleSet::try_from(parsed.includes)?;
 
     if rules.is_empty() {
         bail!("config does not contain any include rules");

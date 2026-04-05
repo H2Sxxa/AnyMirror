@@ -1,15 +1,15 @@
 use url::Url;
 
-use crate::rules::pool::Rules;
-use crate::rules::schema::RawRule;
-use crate::rules::types::{
+use crate::rules::model::{
     HostPattern, HostRuleMatcher, Rule, RuleAction, RuleActionKind, RuleKind, RuleMatcher,
     UpstreamPlan,
 };
+use crate::rules::pool::RuleSet;
+use crate::rules::schema::RuleSchema;
 
 #[test]
 fn rewrites_prefix_rule_from_root_path() {
-    let rules = Rules::new(vec![Rule {
+    let rules = RuleSet::new(vec![Rule {
         kind: RuleKind::Prefix,
         matcher: RuleMatcher::PrefixUrl {
             origin: Url::parse("https://libraries.minecraft.net/").unwrap(),
@@ -86,7 +86,7 @@ fn exact_rule_requires_full_url_match() {
 
 #[test]
 fn structured_host_rule_rewrites_full_path() {
-    let raw_rule: RawRule = serde_yaml::from_str(
+    let rule_schema: RuleSchema = serde_yaml::from_str(
         r#"
 match:
   host: meta.fabricmc.net
@@ -97,7 +97,7 @@ action:
 "#,
     )
     .unwrap();
-    let rules = Rules::try_from(vec![raw_rule]).unwrap();
+    let rules = RuleSet::try_from(vec![rule_schema]).unwrap();
 
     let original = Url::parse("https://meta.fabricmc.net/v2/versions/loader/1.20.1").unwrap();
     let resolved = rules.resolve(&original).unwrap();
@@ -112,7 +112,7 @@ action:
 
 #[test]
 fn structured_host_suffix_rule_matches_dns_hosts() {
-    let rules = Rules::new(vec![Rule {
+    let rules = RuleSet::new(vec![Rule {
         kind: RuleKind::HostSuffix,
         matcher: RuleMatcher::Host(HostRuleMatcher {
             pattern: HostPattern::Suffix("example.com".to_string()),
@@ -137,7 +137,7 @@ fn structured_host_suffix_rule_matches_dns_hosts() {
 
 #[test]
 fn direct_action_returns_original_upstream() {
-    let raw_rule: RawRule = serde_yaml::from_str(
+    let rule_schema: RuleSchema = serde_yaml::from_str(
         r#"
 match:
   host: download.example.com
@@ -147,7 +147,7 @@ action:
 "#,
     )
     .unwrap();
-    let rule = Rule::try_from(raw_rule).unwrap();
+    let rule = Rule::try_from(rule_schema).unwrap();
     let original = Url::parse("https://download.example.com/passthrough/file.zip").unwrap();
 
     let resolved = rule.resolve(&original).unwrap();
@@ -158,7 +158,7 @@ action:
 
 #[test]
 fn structured_prefix_rule_rewrites_like_legacy_prefix() {
-    let raw_rule: RawRule = serde_yaml::from_str(
+    let rule_schema: RuleSchema = serde_yaml::from_str(
         r#"
 match:
   prefix: https://libraries.minecraft.net/
@@ -169,7 +169,7 @@ action:
 "#,
     )
     .unwrap();
-    let rules = Rules::try_from(vec![raw_rule]).unwrap();
+    let rules = RuleSet::try_from(vec![rule_schema]).unwrap();
     let original =
         Url::parse("https://libraries.minecraft.net/com/example/demo/1.0/demo-1.0.jar").unwrap();
 
@@ -183,8 +183,27 @@ action:
 }
 
 #[test]
+fn prefix_rule_with_trailing_slash_does_not_match_parent_path() {
+    let rule_schema: RuleSchema = serde_yaml::from_str(
+        r#"
+match:
+  prefix: https://meta.fabricmc.net/v2/
+action:
+  type: mirror
+  upstream:
+    url: https://mirror.example.com/v2/
+"#,
+    )
+    .unwrap();
+    let rules = RuleSet::try_from(vec![rule_schema]).unwrap();
+    let unmatched = Url::parse("https://meta.fabricmc.net/v2").unwrap();
+
+    assert!(rules.resolve(&unmatched).is_none());
+}
+
+#[test]
 fn reject_action_returns_reject_plan() {
-    let raw_rule: RawRule = serde_yaml::from_str(
+    let rule_schema: RuleSchema = serde_yaml::from_str(
         r#"
 match:
   host: blocked.example.com
@@ -195,7 +214,7 @@ action:
 "#,
     )
     .unwrap();
-    let rules = Rules::try_from(vec![raw_rule]).unwrap();
+    let rules = RuleSet::try_from(vec![rule_schema]).unwrap();
     let original = Url::parse("https://blocked.example.com/file.zip").unwrap();
 
     let resolved = rules.resolve(&original).unwrap();
@@ -209,7 +228,7 @@ action:
 
 #[test]
 fn ip_rule_matches_literal_ip_requests() {
-    let raw_rule: RawRule = serde_yaml::from_str(
+    let rule_schema: RuleSchema = serde_yaml::from_str(
         r#"
 match:
   ip: 203.0.113.10
@@ -220,7 +239,7 @@ action:
 "#,
     )
     .unwrap();
-    let rules = Rules::try_from(vec![raw_rule]).unwrap();
+    let rules = RuleSet::try_from(vec![rule_schema]).unwrap();
     let original = Url::parse("https://203.0.113.10/file.zip").unwrap();
 
     let resolved = rules.resolve(&original).unwrap();
@@ -234,7 +253,7 @@ action:
 
 #[test]
 fn ip_cidr_rule_matches_literal_ip_requests_in_range() {
-    let raw_rule: RawRule = serde_yaml::from_str(
+    let rule_schema: RuleSchema = serde_yaml::from_str(
         r#"
 match:
   ip_cidr: 203.0.113.0/24
@@ -244,7 +263,7 @@ action:
 "#,
     )
     .unwrap();
-    let rules = Rules::try_from(vec![raw_rule]).unwrap();
+    let rules = RuleSet::try_from(vec![rule_schema]).unwrap();
     let matched = Url::parse("https://203.0.113.42/index.html").unwrap();
     let unmatched = Url::parse("https://203.0.114.42/index.html").unwrap();
 

@@ -25,7 +25,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use crate::config::FakeDnsOptions;
-use crate::rules::pool::LiveRules;
+use crate::rules::pool::LiveRuleSet;
 use crate::socket::bind_dual_stack_tcp_listener;
 use crate::workers::Workers;
 
@@ -46,7 +46,7 @@ pub struct FakeDnsRuntimeHandle {
 #[derive(Debug)]
 struct FakeDnsState {
     fake_ip_store: FakeIpStore,
-    rules: LiveRules,
+    rules: LiveRuleSet,
     options: FakeDnsOptions,
     resolver: TokioResolver,
 }
@@ -69,7 +69,7 @@ struct DnsResolution {
 }
 
 impl FakeDnsServer {
-    pub fn new(options: FakeDnsOptions, rules: LiveRules) -> Result<Self> {
+    pub fn new(options: FakeDnsOptions, rules: LiveRuleSet) -> Result<Self> {
         let state = Arc::new(FakeDnsState::new(options, rules)?);
         Ok(Self { state })
     }
@@ -165,7 +165,7 @@ impl FakeDnsRuntimeHandle {
 }
 
 impl FakeDnsState {
-    fn new(options: FakeDnsOptions, rules: LiveRules) -> Result<Self> {
+    fn new(options: FakeDnsOptions, rules: LiveRuleSet) -> Result<Self> {
         let resolver = TokioResolver::builder_tokio()
             .map_err(|error| anyhow!("Failed to create fake DNS resolver: {}", error))?
             .build();

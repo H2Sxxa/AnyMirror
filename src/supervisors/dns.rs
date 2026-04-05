@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use crate::{
     config::FakeDnsOptions,
-    rules::pool::LiveRules,
+    rules::pool::LiveRuleSet,
     traffic::shared::dns::{FakeDnsRuntimeHandle, FakeDnsServer},
     workers::Workers,
 };
@@ -31,7 +31,7 @@ impl FakeDnsSupervisor {
     pub async fn start(
         &self,
         options: FakeDnsOptions,
-        rules: LiveRules,
+        rules: LiveRuleSet,
     ) -> Result<FakeDnsInstance> {
         let server = FakeDnsServer::new(options, rules)?;
         let runtime = server.start_runtime(self.workers.clone()).await?;

@@ -2,32 +2,34 @@ use anyhow::{Context, Result, ensure};
 use ipnet::IpNet;
 use url::Url;
 
-use super::matcher::{
+use super::matching::{
     normalize_host, normalize_host_suffix, normalize_path_prefix, normalize_scheme,
 };
-use super::pool::Rules;
-use super::schema::{RawDnsPlan, RawRule, RawRuleAction, RawRuleMatcher, RawUpstreamPlan};
-use super::types::{
+use super::model::{
     DnsMode, DnsPlan, HostPattern, HostRuleMatcher, IpPattern, IpRuleMatcher, RejectRuleAction,
     Rule, RuleAction, RuleMatcher, UpstreamPlan,
 };
+use super::pool::RuleSet;
+use super::schema::{
+    DnsPlanSchema, RuleActionSchema, RuleMatcherSchema, RuleSchema, UpstreamPlanSchema,
+};
 
-impl TryFrom<Vec<RawRule>> for Rules {
+impl TryFrom<Vec<RuleSchema>> for RuleSet {
     type Error = anyhow::Error;
 
-    fn try_from(value: Vec<RawRule>) -> Result<Self> {
+    fn try_from(value: Vec<RuleSchema>) -> Result<Self> {
         let mut entries = Vec::with_capacity(value.len());
-        for raw_rule in value {
-            entries.push(Rule::try_from(raw_rule)?);
+        for rule_schema in value {
+            entries.push(Rule::try_from(rule_schema)?);
         }
         Ok(Self::new(entries))
     }
 }
 
-impl TryFrom<RawRule> for Rule {
+impl TryFrom<RuleSchema> for Rule {
     type Error = anyhow::Error;
 
-    fn try_from(value: RawRule) -> Result<Self> {
+    fn try_from(value: RuleSchema) -> Result<Self> {
         let matcher = RuleMatcher::try_from(value.matcher)?;
         let action = RuleAction::try_from(value.action)?;
         Rule::validate_matcher_action(&matcher, &action)?;
@@ -40,11 +42,11 @@ impl TryFrom<RawRule> for Rule {
     }
 }
 
-impl TryFrom<RawRuleMatcher> for RuleMatcher {
+impl TryFrom<RuleMatcherSchema> for RuleMatcher {
     type Error = anyhow::Error;
 
-    fn try_from(value: RawRuleMatcher) -> Result<Self> {
-        let RawRuleMatcher {
+    fn try_from(value: RuleMatcherSchema) -> Result<Self> {
+        let RuleMatcherSchema {
             exact,
             prefix,
             host,
@@ -158,16 +160,16 @@ impl TryFrom<RawRuleMatcher> for RuleMatcher {
     }
 }
 
-impl TryFrom<RawRuleAction> for RuleAction {
+impl TryFrom<RuleActionSchema> for RuleAction {
     type Error = anyhow::Error;
 
-    fn try_from(value: RawRuleAction) -> Result<Self> {
+    fn try_from(value: RuleActionSchema) -> Result<Self> {
         match value {
-            RawRuleAction::Mirror { upstream } => {
+            RuleActionSchema::Mirror { upstream } => {
                 Ok(Self::Mirror(UpstreamPlan::try_from(upstream)?))
             }
-            RawRuleAction::Direct => Ok(Self::Direct),
-            RawRuleAction::Reject { status, message } => {
+            RuleActionSchema::Direct => Ok(Self::Direct),
+            RuleActionSchema::Reject { status, message } => {
                 let status = status.unwrap_or(403);
                 ensure!(
                     (100..=599).contains(&status),
@@ -188,10 +190,10 @@ impl TryFrom<RawRuleAction> for RuleAction {
     }
 }
 
-impl TryFrom<RawUpstreamPlan> for UpstreamPlan {
+impl TryFrom<UpstreamPlanSchema> for UpstreamPlan {
     type Error = anyhow::Error;
 
-    fn try_from(value: RawUpstreamPlan) -> Result<Self> {
+    fn try_from(value: UpstreamPlanSchema) -> Result<Self> {
         let url = Url::parse(&value.url)
             .with_context(|| format!("invalid upstream url `{}`", value.url))?;
         let plan = Self {
@@ -208,10 +210,10 @@ impl TryFrom<RawUpstreamPlan> for UpstreamPlan {
     }
 }
 
-impl TryFrom<RawDnsPlan> for DnsPlan {
+impl TryFrom<DnsPlanSchema> for DnsPlan {
     type Error = anyhow::Error;
 
-    fn try_from(value: RawDnsPlan) -> Result<Self> {
+    fn try_from(value: DnsPlanSchema) -> Result<Self> {
         let plan = Self {
             mode: value.mode,
             server: value.server.filter(|value| !value.is_empty()),

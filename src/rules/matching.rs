@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use anyhow::{Result, bail, ensure};
 use url::Url;
 
@@ -46,14 +48,25 @@ pub(super) fn join_paths(base: &str, suffix: &str) -> String {
 }
 
 pub(super) fn normalize_host(value: &str) -> Result<String> {
-    let normalized = value.trim().trim_end_matches('.').to_ascii_lowercase();
+    let normalized = normalize_host_cow(value)?;
+    Ok(normalized.into_owned())
+}
+
+pub(super) fn normalize_host_cow<'a>(value: &'a str) -> Result<Cow<'a, str>> {
+    let trimmed = value.trim();
+    let normalized = trimmed.trim_end_matches('.');
     ensure!(!normalized.is_empty(), "host matcher must not be empty");
     ensure!(
         !normalized.contains("://") && !normalized.contains('/'),
         "host matcher must be a bare hostname: `{}`",
         value
     );
-    Ok(normalized)
+
+    if normalized.bytes().all(|byte| !byte.is_ascii_uppercase()) {
+        return Ok(Cow::Borrowed(normalized));
+    }
+
+    Ok(Cow::Owned(normalized.to_ascii_lowercase()))
 }
 
 pub(super) fn normalize_host_suffix(value: &str) -> Result<String> {

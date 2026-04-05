@@ -8,7 +8,7 @@ use tokio::{sync::mpsc, time};
 
 use crate::{
     config::{AppConfig, BackendOptions, load_config},
-    rules::pool::LiveRules,
+    rules::pool::LiveRuleSet,
     workers::Workers,
 };
 
@@ -25,7 +25,7 @@ struct StaticConfigSnapshot {
 pub fn spawn_config_watch(
     path: PathBuf,
     active_config: &AppConfig,
-    live_rules: LiveRules,
+    live_rules: LiveRuleSet,
     workers: Workers,
     reload_tx: Option<mpsc::UnboundedSender<AppConfig>>,
 ) {

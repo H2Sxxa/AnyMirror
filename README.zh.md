@@ -89,7 +89,7 @@ anymirror --mode transparent --config config.yml
 `--config` 也支持简单 alias。例如 `--config mcdev` 会依次尝试当前目录下的
 `config.mcdev.yaml`、`config.mcdev.yml`、`mcdev.yaml`、`mcdev.yml`。
 
-`--watch-config` 支持运行时热重载配置。规则变更会原地生效；其余运行时组件会在同一进程内按受影响范围重启。也就是说进程不退出，但重载仍然不是零中断。
+`--watch-config` 支持运行时热重载配置。规则变更会原地生效；其余运行时组件会在同一进程内按受影响范围重启。也就是说进程不退出，但重载仍然不是零中断。更完整的重载行为说明见 [docs/runtime-reload.zh.md](/c:/WorkSpace/rust/anymirror/docs/runtime-reload.zh.md)。
 
 ### 模式支持范围
 
@@ -172,26 +172,7 @@ includes:
 
 ### 配置监视与热重载
 
-使用 `--watch-config` 启动后，AnyMirror 会轮询当前解析出的配置文件路径，并在文件变化时原地热重载规则集。为避免编辑器连续写入带来的抖动，watcher 会等待文件的最后修改时间稳定一小段时间后再执行重载。
-
-- 可立即热生效：
-  - `includes`
-  - `rules`
-- 配置变化时会在运行时重建：
-  - `listen`：显式模式下只重启 HTTP listener；透明模式下重启 HTTP listener 和拦截后端
-  - `tls_port`：重启 TLS listener 和拦截后端
-  - `backend.dns.listen`：重启 fake DNS 服务和拦截后端
-  - `backend.dns.fake_ipv4_range`：重启 fake DNS 服务和拦截后端
-  - `backend.dns.fake_ipv6_range`：重启 fake DNS 服务和拦截后端
-  - `backend.dns.record_ttl_secs`：重启 fake DNS 服务和拦截后端
-  - `backend.windivert.*`：只重启拦截后端
-
-透明模式下，本地代理和 `FakeDnsServer` 会共用这份热更新后的规则，因此规则变化会同时影响请求匹配和 fake-ip DNS 判定；其余配置变化时，只会重建受影响的组件。
-
-注意：
-
-- 运行时重载仍然是顺序重建，不是新旧 generation 重叠切换，所以组件重启时可能有一个很短的中断窗口。
-- fake DNS 服务或拦截后端重建时，已有透明连接可能会被重置。
+使用 `--watch-config` 启动后，AnyMirror 会轮询当前解析出的配置文件路径，并在文件变化时执行防抖后的原地规则替换或组件级重启。完整的重载计划和当前边界见 [docs/runtime-reload.zh.md](/c:/WorkSpace/rust/anymirror/docs/runtime-reload.zh.md)。
 
 ### DNS Resolver 模式
 
@@ -217,6 +198,8 @@ AnyMirror 里有两层不同的 DNS 配置：
 - 透明模式下对客户端 DoH / DoT 的加密 DNS 拦截
 
 ### 规则匹配模式
+
+如果你想看规则引擎的内部模型、加载路径、运行时匹配路径和编译后索引结构，见 [docs/rule-engine.zh.md](/c:/WorkSpace/rust/anymirror/docs/rule-engine.zh.md)。
 
 规则引擎现在只使用结构化的 `match + action` 规则：
 
@@ -292,89 +275,13 @@ includes:
 - `action.type: reject`：本地直接返回拒绝响应，不再访问 upstream
 
 ## 架构设计
-
-### 透明代理主链路
+当前透明代理主链路可以概括成：
 
 ```text
-                      +----------------------+
-                      |      AppConfig       |
-                      | rules / dns / ports  |
-                      +----------+-----------+
-                                 |
-                                 v
-                      +----------+-----------+
-                      |      LiveRules       |
-                      |  编译后的 RulePool    |
-                      +----------+-----------+
-                                 |
-                                 v
-+-----------------------------------------------------------+
-|                    Transparent Runtime                    |
-|             proxy::runtime::serve_transparent             |
-+----------------------+----------------+-------------------+
-                       |                |
-                       |                |
-                       v                v
-              +--------+---------+   +--+------------------+
-              |    Supervisors   |   |      Workers        |
-              | listener/dns/    |   | config watch / DNS  |
-              | intercept        |   | server / WinDivert  |
-              +--------+---------+   +---------------------+
-                       |
-     +-----------------+-------------------------------+
-     |                 |                               |
-     v                 v                               v
-+----+---------+  +----+---------+            +--------+---------+
-| Local Proxy  |  | FakeDnsServer |            | Intercept Backend |
-| HTTP/TLS     |  | shared/dns    |            | 当前实现: WinDivert|
-+----+---------+  +----+---------+            +--------+---------+
-     |                 |                               |
-     |                 |                               v
-     |                 |                    +----------+----------+
-     |                 |                    | DNS UDP responder   |
-     |                 |                    | DNS TCP redirect    |
-     |                 |                    | Fake-IP TCP redirect|
-     |                 |                    | QUIC drop           |
-     |                 |                    | Proxy response rw   |
-     |                 |                    +----------+----------+
-     |                 |                               |
-     +-----------------+-------------------------------+
-                                 |
-                                 v
-                      +----------+-----------+
-                      |      Shared NAT      |
-                      |   traffic/shared     |
-                      +----------+-----------+
-                                 |
-                                 v
-                      +----------+-----------+
-                      |   Mirror / Direct    |
-                      |      upstream 决策    |
-                      +----------+-----------+
-                                 |
-                   +-------------+-------------+
-                   |                           |
-                   v                           v
-            +------+-------+            +------+------+
-            | Mirror Upstream|          | Original Up |
-            +----------------+          +-------------+
+FakeDnsServer -> Intercept Backend -> Local Proxy -> Mirror/Direct upstream
 ```
 
-### 职责划分
-
-- **FakeDnsServer：** 负责为命中规则的 origin host 分配 fake-ip，并生成 DNS 响应。
-- **Intercept Backend：** 负责做数据包拦截。当前实现是 WinDivert，后续也可以替换成 TUN/TAP 后端。
-- **Shared NAT：** 维护 `(client_ip, client_port) -> (original_destination_ip, original_destination_port)` 映射，用于把代理响应改回原始目标。
-- **Local Transparent Proxy：** 根据 HTTP Host 或 HTTPS SNI 还原原始请求目标，并决定是走镜像还是回源直连。
-
-### 请求流程
-
-1. 应用先解析某个命中规则的域名。
-2. `FakeDnsServer` 返回来自 fake-ip 地址池的 fake IPv4 或 fake IPv6。
-3. 拦截后端截获发往 fake-ip 的 TCP 连接，并将其重定向到本地代理监听端口。
-4. 本地代理还原原始 URL，然后执行规则匹配。
-5. 命中规则则转发到镜像，不命中则回源直连。
-6. 共享 NAT 让拦截后端可以在响应返回客户端前，把代理响应还原成原始目标连接。
+完整的透明模式架构、组件职责和请求流程见 [docs/architecture.zh.md](/c:/WorkSpace/rust/anymirror/docs/architecture.zh.md)。
 
 ## 技术细节
 

@@ -5,7 +5,7 @@ use axum::Router;
 use tokio::sync::mpsc;
 
 use crate::config::AppConfig;
-use crate::rules::pool::LiveRules;
+use crate::rules::pool::LiveRuleSet;
 use crate::supervisors::{
     FakeDnsInstance, FakeDnsSupervisor, HttpListenerHandle, InterceptBackendHandle,
     InterceptBackendRuntimeConfig, InterceptBackendSupervisor, ListenerSupervisor,
@@ -27,7 +27,7 @@ pub async fn serve_explicit(
     watch_config_path: Option<PathBuf>,
     workers: Workers,
 ) -> Result<()> {
-    let live_rules = LiveRules::new(config.rules.clone());
+    let live_rules = LiveRuleSet::new(config.rules.clone());
     let listener_supervisor = ListenerSupervisor::new(workers.clone());
     let (reload_tx, mut reload_rx) = mpsc::unbounded_channel();
 
@@ -75,7 +75,7 @@ pub async fn serve_transparent(
     watch_config_path: Option<PathBuf>,
     workers: Workers,
 ) -> Result<()> {
-    let live_rules = LiveRules::new(config.rules.clone());
+    let live_rules = LiveRuleSet::new(config.rules.clone());
     let listener_supervisor = ListenerSupervisor::new(workers.clone());
     let fake_dns_supervisor = FakeDnsSupervisor::new(workers.clone());
     let intercept_supervisor = InterceptBackendSupervisor::new(workers.clone());
@@ -129,7 +129,7 @@ pub async fn serve_transparent(
 
 fn build_state(
     _listen_addr: std::net::SocketAddr,
-    rules: LiveRules,
+    rules: LiveRuleSet,
 ) -> Result<AppState<HyperExecutor>> {
     let executor = HyperExecutor::new()?;
 
@@ -139,7 +139,7 @@ fn build_state(
 fn maybe_spawn_config_watch(
     watch_config_path: Option<PathBuf>,
     config: &AppConfig,
-    live_rules: LiveRules,
+    live_rules: LiveRuleSet,
     workers: Workers,
     reload_tx: Option<mpsc::UnboundedSender<AppConfig>>,
 ) {
@@ -179,7 +179,7 @@ impl TransparentRuntimeHandles {
         intercept_supervisor: &InterceptBackendSupervisor,
         app: Router,
         next_config: &AppConfig,
-        live_rules: LiveRules,
+        live_rules: LiveRuleSet,
     ) -> Result<()> {
         let reload_plan = TransparentReloadPlan::from_configs(&self.config, next_config);
 
@@ -248,7 +248,7 @@ async fn start_transparent_components(
     intercept_supervisor: &InterceptBackendSupervisor,
     app: Router,
     config: &AppConfig,
-    live_rules: LiveRules,
+    live_rules: LiveRuleSet,
 ) -> Result<TransparentRuntimeHandles> {
     let dns = fake_dns_supervisor
         .start(config.backend.dns.clone(), live_rules)

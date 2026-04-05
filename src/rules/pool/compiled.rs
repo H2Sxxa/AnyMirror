@@ -4,21 +4,20 @@ use std::net::IpAddr;
 
 use url::Url;
 
-use super::super::matcher::normalize_host;
-use super::super::types::{HostPattern, IpPattern, Rule, RuleAction, RuleMatcher};
-use super::tree::{DnsSuffixTrie, HostSuffixTrie, Ipv4CidrTrie, Ipv6CidrTrie, PrefixPathTrie};
+use super::super::matching::normalize_host;
+use super::super::model::{HostPattern, IpPattern, Rule, RuleAction, RuleMatcher};
+use super::trie::{Ipv4CidrTrie, Ipv6CidrTrie, PrefixPathTrie, SuffixHostTrie};
 
 #[derive(Debug, Clone)]
-pub(super) struct RulePool {
-    pub(super) exact_urls: HashMap<ExactUrlKey, Vec<usize>>,
+pub(super) struct CompiledRuleIndex {
+    pub(super) exact_urls: HashMap<ExactUrlKey, Box<[usize]>>,
     pub(super) prefix_origins: HashMap<OriginKey, PrefixPathTrie>,
-    pub(super) exact_hosts: HashMap<String, Vec<usize>>,
-    pub(super) suffix_hosts: HostSuffixTrie,
-    pub(super) exact_ips: HashMap<IpAddr, Vec<usize>>,
+    pub(super) exact_hosts: HashMap<String, Box<[usize]>>,
+    pub(super) suffix_hosts: SuffixHostTrie,
+    pub(super) exact_ips: HashMap<IpAddr, Box<[usize]>>,
     pub(super) ipv4_cidr_ips: Ipv4CidrTrie,
     pub(super) ipv6_cidr_ips: Ipv6CidrTrie,
     pub(super) dns_exact_hosts: HashSet<String>,
-    pub(super) dns_suffix_hosts: DnsSuffixTrie,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -55,17 +54,16 @@ impl Hash for ExactUrlKey {
     }
 }
 
-impl RulePool {
+impl CompiledRuleIndex {
     pub(super) fn compile(entries: &[Rule]) -> Self {
         let mut exact_urls = HashMap::new();
         let mut prefix_origins = HashMap::new();
         let mut exact_hosts = HashMap::new();
-        let mut suffix_hosts = HostSuffixTrie::default();
+        let mut suffix_hosts = SuffixHostTrie::default();
         let mut exact_ips = HashMap::new();
         let mut ipv4_cidr_ips = Ipv4CidrTrie::default();
         let mut ipv6_cidr_ips = Ipv6CidrTrie::default();
         let mut dns_exact_hosts = HashSet::new();
-        let mut dns_suffix_hosts = DnsSuffixTrie::default();
 
         for (index, rule) in entries.iter().enumerate() {
             match &rule.matcher {
@@ -96,7 +94,7 @@ impl RulePool {
                                 .push(index);
                         }
                     }
-                    HostPattern::Suffix(suffix) => suffix_hosts.insert(suffix, index),
+                    HostPattern::Suffix(suffix) => suffix_hosts.insert_rule(suffix, index),
                 },
                 RuleMatcher::Ip(ip_matcher) => match &ip_matcher.pattern {
                     IpPattern::Exact(ip) => {
@@ -110,20 +108,19 @@ impl RulePool {
             let dns_keys = dns_host_keys(rule);
             dns_exact_hosts.extend(dns_keys.exact_hosts);
             for suffix in dns_keys.suffix_hosts {
-                dns_suffix_hosts.insert(&suffix);
+                suffix_hosts.mark_dns(&suffix);
             }
         }
 
         Self {
-            exact_urls,
+            exact_urls: freeze_index_map(exact_urls),
             prefix_origins,
-            exact_hosts,
+            exact_hosts: freeze_index_map(exact_hosts),
             suffix_hosts,
-            exact_ips,
+            exact_ips: freeze_index_map(exact_ips),
             ipv4_cidr_ips,
             ipv6_cidr_ips,
             dns_exact_hosts,
-            dns_suffix_hosts,
         }
     }
 }
@@ -179,4 +176,14 @@ fn dns_host_keys(rule: &Rule) -> RuleDnsKeys {
         },
         RuleMatcher::Ip(_) => RuleDnsKeys::default(),
     }
+}
+
+fn freeze_index_map<K>(index_map: HashMap<K, Vec<usize>>) -> HashMap<K, Box<[usize]>>
+where
+    K: Eq + Hash,
+{
+    index_map
+        .into_iter()
+        .map(|(key, indices)| (key, indices.into_boxed_slice()))
+        .collect()
 }

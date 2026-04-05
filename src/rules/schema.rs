@@ -1,16 +1,16 @@
 use serde::Deserialize;
 
-use crate::rules::types::DnsMode;
+use crate::rules::model::DnsMode;
 
 #[derive(Debug, Deserialize)]
-pub struct RawRule {
+pub struct RuleSchema {
     #[serde(rename = "match")]
-    pub matcher: RawRuleMatcher,
-    pub action: RawRuleAction,
+    pub matcher: RuleMatcherSchema,
+    pub action: RuleActionSchema,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct RawRuleMatcher {
+pub struct RuleMatcherSchema {
     pub exact: Option<String>,
     pub prefix: Option<String>,
     pub host: Option<String>,
@@ -25,9 +25,9 @@ pub struct RawRuleMatcher {
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
-pub enum RawRuleAction {
+pub enum RuleActionSchema {
     Mirror {
-        upstream: RawUpstreamPlan,
+        upstream: UpstreamPlanSchema,
     },
     Direct,
     Reject {
@@ -37,17 +37,17 @@ pub enum RawRuleAction {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct RawUpstreamPlan {
+pub struct UpstreamPlanSchema {
     pub url: String,
     pub sni: Option<String>,
     pub host: Option<String>,
     pub connect_host: Option<String>,
     pub connect_ip: Option<std::net::IpAddr>,
-    pub dns: Option<RawDnsPlan>,
+    pub dns: Option<DnsPlanSchema>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct RawDnsPlan {
+pub struct DnsPlanSchema {
     pub mode: DnsMode,
     pub server: Option<String>,
 }

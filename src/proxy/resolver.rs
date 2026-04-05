@@ -7,7 +7,7 @@ use hickory_resolver::config::{NameServerConfigGroup, ResolverConfig, ResolverOp
 use hickory_resolver::name_server::TokioConnectionProvider;
 use url::Url;
 
-use crate::rules::types::{DnsMode, DnsPlan};
+use crate::rules::model::{DnsMode, DnsPlan};
 
 /// Custom DNS Resolver
 ///

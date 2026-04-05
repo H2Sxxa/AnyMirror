@@ -11,7 +11,7 @@ use super::{
     responses::{json_error, reject_response},
     state::AppState,
 };
-use crate::rules::types::{RuleActionKind, UpstreamPlan};
+use crate::rules::model::{RuleActionKind, UpstreamPlan};
 
 pub(crate) async fn forward_request<E: UpstreamExecutor>(
     state: &AppState<E>,

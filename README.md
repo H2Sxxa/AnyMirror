@@ -91,7 +91,7 @@ anymirror --mode transparent --config config.yml
 
 `--watch-config` hot reloads the config file at runtime. Rule changes are applied in place, and
 affected runtime components are restarted inside the same process. This keeps the process alive,
-but reload is still not zero-downtime.
+but reload is still not zero-downtime. For detailed reload behavior, see [docs/runtime-reload.md](/c:/WorkSpace/rust/anymirror/docs/runtime-reload.md).
 
 ### Mode Support
 
@@ -174,29 +174,10 @@ includes:
 
 ### Config Watch And Hot Reload
 
-When started with `--watch-config`, AnyMirror polls the resolved config file and hot reloads the
-rule set in place. The watcher also debounces reloads by waiting until the file modification time
-has stayed stable for a short window before reloading.
-
-- Hot reloaded immediately:
-  - `includes`
-  - `rules`
-- Recreated at runtime when changed:
-  - `listen`: HTTP listener in explicit mode; HTTP listener plus intercept backend in transparent mode
-  - `tls_port`: TLS listener plus intercept backend
-  - `backend.dns.listen`: fake DNS server plus intercept backend
-  - `backend.dns.fake_ipv4_range`: fake DNS server plus intercept backend
-  - `backend.dns.fake_ipv6_range`: fake DNS server plus intercept backend
-  - `backend.dns.record_ttl_secs`: fake DNS server plus intercept backend
-  - `backend.windivert.*`: intercept backend only
-
-Transparent mode reuses the reloaded rules in both the local proxy and `FakeDnsServer`, and only
-recreates the components affected by each config change.
-
-Notes:
-
-- Runtime reload is still sequential, not generation-overlapped, so there can be a short interruption while a component is restarted.
-- Existing transparent connections can be reset when the fake DNS service or intercept backend is reloaded.
+When started with `--watch-config`, AnyMirror polls the resolved config file, debounces editor
+writes using a short stable window, and then applies either in-place rule replacement or
+component-scoped runtime restarts. For the full reload plan and current limits, see
+[docs/runtime-reload.md](/c:/WorkSpace/rust/anymirror/docs/runtime-reload.md).
 
 ### DNS Resolver Modes
 
@@ -222,6 +203,8 @@ Still not supported:
 - Encrypted DNS interception for client-side DoH/DoT in transparent mode
 
 ### Rule Matching Modes
+
+For the internal rule-engine model, load path, runtime match path, and compiled index layout, see [docs/rule-engine.md](/c:/WorkSpace/rust/anymirror/docs/rule-engine.md).
 
 The rule engine only uses structured `match + action` rules:
 
@@ -297,89 +280,14 @@ Structured actions:
 - `action.type: reject`: Return a local reject response without contacting the upstream
 
 ## Architecture
-
-### Transparent Pipeline
+The current transparent pipeline is:
 
 ```text
-                      +----------------------+
-                      |      AppConfig       |
-                      | rules / dns / ports  |
-                      +----------+-----------+
-                                 |
-                                 v
-                      +----------+-----------+
-                      |      LiveRules       |
-                      |  compiled RulePool   |
-                      +----------+-----------+
-                                 |
-                                 v
-+-----------------------------------------------------------+
-|                    Transparent Runtime                    |
-|             proxy::runtime::serve_transparent             |
-+----------------------+----------------+-------------------+
-                       |                |
-                       |                |
-                       v                v
-              +--------+---------+   +--+------------------+
-              |    Supervisors   |   |      Workers        |
-              | listener/dns/    |   | config watch / DNS  |
-              | intercept        |   | server / WinDivert  |
-              +--------+---------+   +---------------------+
-                       |
-     +-----------------+-------------------------------+
-     |                 |                               |
-     v                 v                               v
-+----+---------+  +----+---------+            +--------+---------+
-| Local Proxy  |  | FakeDnsServer |            | Intercept Backend |
-| HTTP/TLS     |  | shared/dns    |            | current: WinDivert|
-+----+---------+  +----+---------+            +--------+---------+
-     |                 |                               |
-     |                 |                               v
-     |                 |                    +----------+----------+
-     |                 |                    | DNS UDP responder   |
-     |                 |                    | DNS TCP redirect    |
-     |                 |                    | Fake-IP TCP redirect|
-     |                 |                    | QUIC drop           |
-     |                 |                    | Proxy response rw   |
-     |                 |                    +----------+----------+
-     |                 |                               |
-     +-----------------+-------------------------------+
-                                 |
-                                 v
-                      +----------+-----------+
-                      |      Shared NAT      |
-                      |   traffic/shared     |
-                      +----------+-----------+
-                                 |
-                                 v
-                      +----------+-----------+
-                      |   Mirror / Direct    |
-                      |    upstream choice   |
-                      +----------+-----------+
-                                 |
-                   +-------------+-------------+
-                   |                           |
-                   v                           v
-            +------+-------+            +------+------+
-            | Mirror Upstream|          | Original Up |
-            +----------------+          +-------------+
+FakeDnsServer -> Intercept Backend -> Local Proxy -> Mirror/Direct upstream
 ```
 
-### Responsibilities
-
-- **FakeDnsServer:** Owns fake-ip allocation and DNS answering for configured origin hosts.
-- **Intercept Backend:** Owns packet interception. The current backend is WinDivert, but this layer is intended to be replaceable by future TUN/TAP backends.
-- **Shared NAT:** Stores `(client_ip, client_port) -> (original_destination_ip, original_destination_port)` mappings so the backend can restore response packets.
-- **Local Transparent Proxy:** Reconstructs the original request target from HTTP Host or HTTPS SNI and executes either mirror forwarding or direct passthrough.
-
-### Request Flow
-
-1. The application resolves a configured host.
-2. `FakeDnsServer` returns a fake IPv4 or IPv6 address from the configured fake-ip pools.
-3. The intercept backend captures TCP traffic to that fake IP and redirects it to the local proxy listeners.
-4. The proxy reconstructs the original URL and evaluates mirror rules.
-5. Matched requests go to the configured mirror; unmatched requests go directly to the original upstream.
-6. Shared NAT lets the intercept backend rewrite outbound proxy responses back to the original destination tuple.
+For the full transparent architecture, component responsibilities, and request flow, see
+[docs/architecture.md](/c:/WorkSpace/rust/anymirror/docs/architecture.md).
 
 ## Technical Details
 

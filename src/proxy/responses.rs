@@ -6,8 +6,8 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tokio::signal;
 
-use crate::rules::pool::RuleMatch;
-use crate::rules::types::{RuleActionKind, RuleKind};
+use crate::rules::model::{RuleActionKind, RuleKind};
+use crate::rules::pool::MatchedRule;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct RewriteQuery {
@@ -37,7 +37,7 @@ pub(crate) fn json_error(status: StatusCode, message: impl Into<String>) -> Resp
         .into_response()
 }
 
-pub(crate) fn rule_kind_name(matched: RuleMatch<'_>) -> &'static str {
+pub(crate) fn rule_kind_name(matched: MatchedRule<'_>) -> &'static str {
     match matched.rule.kind {
         RuleKind::Exact => "exact",
         RuleKind::Prefix => "prefix",
@@ -49,7 +49,7 @@ pub(crate) fn rule_kind_name(matched: RuleMatch<'_>) -> &'static str {
     }
 }
 
-pub(crate) fn rule_action_name(matched: RuleMatch<'_>) -> &'static str {
+pub(crate) fn rule_action_name(matched: MatchedRule<'_>) -> &'static str {
     match matched.action_kind() {
         RuleActionKind::Mirror => "mirror",
         RuleActionKind::Direct => "direct",
