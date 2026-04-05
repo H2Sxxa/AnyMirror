@@ -1,3 +1,4 @@
+mod dns_hijack;
 mod smoltcp;
 mod system;
 
@@ -6,10 +7,12 @@ use std::net::SocketAddr;
 use anyhow::Result;
 use ipnet::{Ipv4Net, Ipv6Net};
 
-use crate::config::{TunBackendOptions, TunStack};
+use crate::config::{TunBackendOptions, TunDnsHijackSpec, TunPlatformDnsMode, TunStack};
 use crate::traffic::TransparentInterceptRuntimeConfig;
 use crate::traffic::shared::dns::FakeDnsServer;
 use crate::workers::Workers;
+
+use self::dns_hijack::{TunDnsPlan, TunDnsTransport};
 
 #[derive(Clone)]
 pub(super) struct TunRuntimeContext {
@@ -20,6 +23,9 @@ pub(super) struct TunRuntimeContext {
     pub fake_ipv4_range: Ipv4Net,
     pub fake_ipv6_range: Ipv6Net,
     pub fake_dns_server: FakeDnsServer,
+    pub platform_dns: TunPlatformDnsMode,
+    dns_plan: TunDnsPlan,
+    dns_hijack: Vec<TunDnsHijackSpec>,
 }
 
 pub struct TransparentInterceptHandle {
@@ -82,6 +88,10 @@ impl TunRuntimeContext {
         let tls_port = runtime_config
             .tls_port
             .unwrap_or(proxy_redirect_addr.port() + 1);
+        let dns_plan = TunDnsPlan::new(
+            runtime_config.fake_ipv4_range,
+            runtime_config.fake_ipv6_range,
+        );
 
         Self {
             tun_name: backend.name.clone(),
@@ -91,6 +101,14 @@ impl TunRuntimeContext {
             fake_ipv4_range: runtime_config.fake_ipv4_range,
             fake_ipv6_range: runtime_config.fake_ipv6_range,
             fake_dns_server,
+            platform_dns: backend.platform_dns,
+            dns_plan,
+            dns_hijack: backend.dns_hijack.clone(),
         }
+    }
+
+    fn should_hijack_dns(&self, transport: TunDnsTransport, target_addr: SocketAddr) -> bool {
+        self.dns_plan
+            .should_hijack_dns(&self.dns_hijack, transport, target_addr)
     }
 }

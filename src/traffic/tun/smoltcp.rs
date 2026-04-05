@@ -1,6 +1,6 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
@@ -18,11 +18,15 @@ use tun_rs::{
 use crate::workers::{ShutdownJoinHandle, Workers};
 
 use super::TunRuntimeContext;
+use super::dns_hijack::{PlatformDnsGuard, TunDnsTransport, configure_platform_dns};
 
 pub struct TransparentInterceptHandle {
     core_tasks: Vec<ShutdownJoinHandle>,
     bridge_tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
+    platform_dns_guard: PlatformDnsGuard,
 }
+
+const BRIDGE_TASK_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl TransparentInterceptHandle {
     pub async fn shutdown(self) {
@@ -31,15 +35,54 @@ impl TransparentInterceptHandle {
         }
 
         let handles = {
-            let Ok(mut guard) = self.bridge_tasks.lock() else {
-                return;
-            };
-            guard.drain(..).collect::<Vec<_>>()
+            match self.bridge_tasks.lock() {
+                Ok(mut guard) => guard.drain(..).collect::<Vec<_>>(),
+                Err(poisoned) => {
+                    tracing::warn!(
+                        "smoltcp bridge task registry was poisoned during shutdown; draining recovered handles"
+                    );
+                    let mut guard = poisoned.into_inner();
+                    guard.drain(..).collect::<Vec<_>>()
+                }
+            }
         };
 
-        for handle in handles {
-            handle.abort();
-            let _ = handle.await;
+        if !handles.is_empty() {
+            tracing::info!(
+                active_bridge_tasks = handles.len(),
+                drain_timeout_ms = BRIDGE_TASK_DRAIN_TIMEOUT.as_millis(),
+                "Draining active smoltcp bridge tasks during shutdown"
+            );
+        }
+
+        let deadline = Instant::now() + BRIDGE_TASK_DRAIN_TIMEOUT;
+        for mut handle in handles {
+            let now = Instant::now();
+            if now >= deadline {
+                handle.abort();
+                let _ = handle.await;
+                continue;
+            }
+
+            let remaining = deadline.saturating_duration_since(now);
+            match tokio::time::timeout(remaining, &mut handle).await {
+                Ok(_) => {}
+                Err(_) => {
+                    tracing::warn!(
+                        drain_timeout_ms = BRIDGE_TASK_DRAIN_TIMEOUT.as_millis(),
+                        "Timed out while draining smoltcp bridge task; aborting remaining task"
+                    );
+                    handle.abort();
+                    let _ = handle.await;
+                }
+            }
+        }
+
+        if let Err(error) = self.platform_dns_guard.restore() {
+            tracing::warn!(
+                ?error,
+                "Failed to restore platform TUN DNS state during shutdown"
+            );
         }
     }
 }
@@ -49,6 +92,8 @@ pub fn run_transparent_tun_smoltcp_runtime(
     workers: Workers,
 ) -> Result<TransparentInterceptHandle> {
     let device = Arc::new(build_tun_device(&context).context("failed to create TUN device")?);
+    let platform_dns_guard = configure_platform_dns(device.clone(), &context)
+        .context("failed to configure platform TUN DNS")?;
     let framed = DeviceFramed::new(device, BytesCodec::new());
     let (mut tun_read, mut tun_write) = framed.split();
 
@@ -119,10 +164,12 @@ pub fn run_transparent_tun_smoltcp_runtime(
         tun_mtu = context.tun_mtu,
         fake_ipv4_range = %context.fake_ipv4_range,
         fake_ipv6_range = %context.fake_ipv6_range,
-        tun_addr_ipv4 = %first_usable_ipv4(context.fake_ipv4_range),
-        tun_addr_ipv6 = %first_usable_ipv6(context.fake_ipv6_range),
-        tun_dns_ipv4 = %dns_server_ipv4(context.fake_ipv4_range),
-        tun_dns_ipv6 = %dns_server_ipv6(context.fake_ipv6_range),
+        tun_addr_ipv4 = %context.dns_plan.tun_addr_v4,
+        tun_addr_ipv6 = %context.dns_plan.tun_addr_v6,
+        tun_dns_ipv4 = %context.dns_plan.dns_addr_v4,
+        tun_dns_ipv6 = %context.dns_plan.dns_addr_v6,
+        first_fake_ipv4 = %context.dns_plan.first_fake_v4,
+        first_fake_ipv6 = %context.dns_plan.first_fake_v6,
         dns_mode = "in-tunnel",
         proxy_port = context.proxy_redirect_addr.port(),
         tls_port = context.tls_port,
@@ -132,6 +179,7 @@ pub fn run_transparent_tun_smoltcp_runtime(
     Ok(TransparentInterceptHandle {
         core_tasks,
         bridge_tasks,
+        platform_dns_guard,
     })
 }
 
@@ -228,7 +276,7 @@ async fn run_tcp_accept_loop(
                 };
 
                 prune_bridge_tasks(&bridge_tasks);
-                let task = if target_addr.port() == 53 {
+                let task = if context.should_hijack_dns(TunDnsTransport::Tcp, target_addr) {
                     let fake_dns_server = context.fake_dns_server.clone();
                     tokio::spawn(async move {
                         if let Err(error) =
@@ -407,7 +455,7 @@ async fn run_udp_loop(
                     return;
                 };
 
-                if target_addr.port() == 53 {
+                if context.should_hijack_dns(TunDnsTransport::Udp, target_addr) {
                     match context.fake_dns_server.resolve_request(&payload).await {
                         Ok(response) => {
                             if let Err(error) = udp_write.send((response, target_addr, client_addr)).await {
@@ -473,19 +521,18 @@ fn prune_bridge_tasks(tasks: &Arc<Mutex<Vec<JoinHandle<()>>>>) {
         guard.retain(|handle| !handle.is_finished());
     }
 }
-
 fn build_tun_device(context: &TunRuntimeContext) -> std::io::Result<tun_rs::AsyncDevice> {
     let builder = DeviceBuilder::new()
         .name(&context.tun_name)
         .layer(Layer::L3)
         .mtu(context.tun_mtu)
         .ipv4(
-            first_usable_ipv4(context.fake_ipv4_range),
+            context.dns_plan.tun_addr_v4,
             context.fake_ipv4_range.prefix_len(),
             None,
         )
         .ipv6(
-            first_usable_ipv6(context.fake_ipv6_range),
+            context.dns_plan.tun_addr_v6,
             context.fake_ipv6_range.prefix_len(),
         )
         .with(|_options| {
@@ -501,9 +548,7 @@ fn build_tun_device(context: &TunRuntimeContext) -> std::io::Result<tun_rs::Asyn
             }
         });
 
-    let device = builder.build_async()?;
-    configure_windows_tun_dns(&device, context)?;
-    Ok(device)
+    builder.build_async()
 }
 
 fn spawn_shutdownable_task<F, Fut>(
@@ -518,45 +563,4 @@ where
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let join = workers.spawn(worker_name, task_factory(shutdown_rx));
     ShutdownJoinHandle::new(shutdown_tx, join)
-}
-
-fn first_usable_ipv4(range: ipnet::Ipv4Net) -> Ipv4Addr {
-    Ipv4Addr::from(u32::from(range.network()).saturating_add(1))
-}
-
-fn first_usable_ipv6(range: ipnet::Ipv6Net) -> Ipv6Addr {
-    Ipv6Addr::from(u128::from_be_bytes(range.network().octets()).saturating_add(1))
-}
-
-fn dns_server_ipv4(range: ipnet::Ipv4Net) -> Ipv4Addr {
-    Ipv4Addr::from(u32::from(range.network()).saturating_add(2))
-}
-
-fn dns_server_ipv6(range: ipnet::Ipv6Net) -> Ipv6Addr {
-    Ipv6Addr::from(u128::from_be_bytes(range.network().octets()).saturating_add(2))
-}
-
-#[cfg(target_os = "windows")]
-fn configure_windows_tun_dns(
-    device: &tun_rs::AsyncDevice,
-    context: &TunRuntimeContext,
-) -> std::io::Result<()> {
-    let dns_server = IpAddr::V4(dns_server_ipv4(context.fake_ipv4_range));
-    device.set_dns_servers(&[dns_server])?;
-
-    tracing::info!(
-        tun_name = %context.tun_name,
-        tun_dns = %dns_server,
-        "Configured Windows TUN adapter DNS"
-    );
-
-    Ok(())
-}
-
-#[cfg(not(target_os = "windows"))]
-fn configure_windows_tun_dns(
-    _device: &tun_rs::AsyncDevice,
-    _context: &TunRuntimeContext,
-) -> std::io::Result<()> {
-    Ok(())
 }

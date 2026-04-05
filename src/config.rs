@@ -50,12 +50,38 @@ pub struct TunBackendOptions {
     pub name: String,
     pub mtu: u16,
     pub stack: TunStack,
+    pub platform_dns: TunPlatformDnsMode,
+    pub dns_hijack: Vec<TunDnsHijackSpec>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TunStack {
     System,
     Smoltcp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TunPlatformDnsMode {
+    Auto,
+    Manual,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TunDnsHijackTransport {
+    Udp,
+    Tcp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TunDnsHijackTarget {
+    Any(u16),
+    Exact(SocketAddr),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TunDnsHijackSpec {
+    pub transport: TunDnsHijackTransport,
+    pub target: TunDnsHijackTarget,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,6 +137,10 @@ struct RawTunBackendOptions {
     mtu: u16,
     #[serde(default = "default_tun_stack")]
     stack: String,
+    #[serde(default = "default_tun_platform_dns")]
+    platform_dns: String,
+    #[serde(default = "default_tun_dns_hijack")]
+    dns_hijack: Vec<String>,
 }
 
 impl Default for RawTunBackendOptions {
@@ -119,6 +149,8 @@ impl Default for RawTunBackendOptions {
             name: default_tun_name(),
             mtu: default_tun_mtu(),
             stack: default_tun_stack(),
+            platform_dns: default_tun_platform_dns(),
+            dns_hijack: default_tun_dns_hijack(),
         }
     }
 }
@@ -291,6 +323,12 @@ impl TryFrom<RawTunBackendOptions> for TunBackendOptions {
             name: value.name,
             mtu: value.mtu,
             stack: parse_tun_stack(&value.stack)?,
+            platform_dns: parse_tun_platform_dns(&value.platform_dns)?,
+            dns_hijack: value
+                .dns_hijack
+                .iter()
+                .map(|entry| parse_tun_dns_hijack_spec(entry))
+                .collect::<Result<Vec<_>>>()?,
         })
     }
 }
@@ -321,6 +359,18 @@ fn default_tun_mtu() -> u16 {
 
 fn default_tun_stack() -> String {
     "system".to_string()
+}
+
+fn default_tun_platform_dns() -> String {
+    if cfg!(target_os = "windows") {
+        "auto".to_string()
+    } else {
+        "manual".to_string()
+    }
+}
+
+fn default_tun_dns_hijack() -> Vec<String> {
+    vec!["any:53".to_string(), "tcp://any:53".to_string()]
 }
 
 fn default_fake_ipv4_range() -> String {
@@ -365,5 +415,71 @@ fn parse_tun_stack(value: &str) -> Result<TunStack> {
             "invalid backend.tun.stack `{}` (expected `system` or `smoltcp`)",
             value
         ),
+    }
+}
+
+fn parse_tun_platform_dns(value: &str) -> Result<TunPlatformDnsMode> {
+    match value {
+        "auto" => Ok(TunPlatformDnsMode::Auto),
+        "manual" => Ok(TunPlatformDnsMode::Manual),
+        _ => bail!(
+            "invalid backend.tun.platform_dns `{}` (expected `auto` or `manual`)",
+            value
+        ),
+    }
+}
+
+fn parse_tun_dns_hijack_spec(value: &str) -> Result<TunDnsHijackSpec> {
+    let normalized = value.trim();
+    if normalized.is_empty() {
+        bail!("invalid backend.tun.dns_hijack entry: value must not be empty");
+    }
+
+    let (transport, target) = if let Some(rest) = normalized.strip_prefix("tcp://") {
+        (TunDnsHijackTransport::Tcp, rest)
+    } else if let Some(rest) = normalized.strip_prefix("udp://") {
+        (TunDnsHijackTransport::Udp, rest)
+    } else {
+        (TunDnsHijackTransport::Udp, normalized)
+    };
+
+    let target = parse_tun_dns_hijack_target(target)
+        .with_context(|| format!("invalid backend.tun.dns_hijack entry `{}`", value))?;
+
+    Ok(TunDnsHijackSpec { transport, target })
+}
+
+fn parse_tun_dns_hijack_target(value: &str) -> Result<TunDnsHijackTarget> {
+    if let Some(port) = value.strip_prefix("any:") {
+        let port = port
+            .parse::<u16>()
+            .with_context(|| format!("invalid dns hijack port `{}`", port))?;
+        return Ok(TunDnsHijackTarget::Any(port));
+    }
+
+    let addr = value
+        .parse::<SocketAddr>()
+        .with_context(|| format!("invalid dns hijack address `{}`", value))?;
+    Ok(TunDnsHijackTarget::Exact(addr))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TunDnsHijackTarget, TunDnsHijackTransport, parse_tun_dns_hijack_spec};
+
+    #[test]
+    fn parses_default_udp_dns_hijack_rule() {
+        let spec = parse_tun_dns_hijack_spec("any:53").unwrap();
+
+        assert_eq!(spec.transport, TunDnsHijackTransport::Udp);
+        assert_eq!(spec.target, TunDnsHijackTarget::Any(53));
+    }
+
+    #[test]
+    fn parses_tcp_dns_hijack_rule() {
+        let spec = parse_tun_dns_hijack_spec("tcp://any:53").unwrap();
+
+        assert_eq!(spec.transport, TunDnsHijackTransport::Tcp);
+        assert_eq!(spec.target, TunDnsHijackTarget::Any(53));
     }
 }

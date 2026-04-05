@@ -11,8 +11,8 @@ use std::sync::Mutex;
 use std::{collections::HashMap, io::Cursor};
 use std::{fs, path::Path, sync::Arc};
 use tokio::net::TcpListener;
-use tokio::spawn;
 use tokio::sync::oneshot;
+use tokio::task::JoinSet;
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls::{
     ServerConfig,
@@ -148,10 +148,22 @@ pub async fn serve_app_tls_with_listener(
     );
 
     // Hyper 1.x / axum 0.8 style pure TCP loop
+    let mut connection_tasks: JoinSet<()> = JoinSet::new();
     loop {
         let accept_result = tokio::select! {
             _ = &mut shutdown => {
-                return Ok(());
+                tracing::info!("TLS interception server stopping; waiting for active connections");
+                break;
+            }
+            maybe_finished = connection_tasks.join_next(), if !connection_tasks.is_empty() => {
+                match maybe_finished {
+                    Some(Ok(())) => continue,
+                    Some(Err(error)) => {
+                        tracing::warn!(?error, "TLS connection task finished with error during runtime");
+                        continue;
+                    }
+                    None => continue,
+                }
             }
             result = listener.accept() => result
         };
@@ -166,7 +178,7 @@ pub async fn serve_app_tls_with_listener(
         let acceptor = acceptor.clone();
         let app = app.clone();
 
-        spawn(async move {
+        connection_tasks.spawn(async move {
             let tls_stream = match acceptor.accept(tcp).await {
                 Ok(s) => s,
                 Err(e) => {
@@ -189,6 +201,14 @@ pub async fn serve_app_tls_with_listener(
             }
         });
     }
+
+    while let Some(result) = connection_tasks.join_next().await {
+        if let Err(error) = result {
+            tracing::warn!(?error, "TLS connection task failed during shutdown drain");
+        }
+    }
+
+    Ok(())
 }
 
 fn get_or_generate_ca_cert() -> Result<(String, String)> {

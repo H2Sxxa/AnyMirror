@@ -149,6 +149,10 @@ backend:
     name: anymirror-tun         # TUN device name
     mtu: 1500
     stack: smoltcp              # system or smoltcp (system is currently TODO)
+    platform_dns: auto          # auto or manual
+    dns_hijack:                 # Optional: DNS hijack targets for tun+smoltcp
+      - any:53                 # UDP DNS hijack
+      - tcp://any:53           # TCP DNS hijack
 
 includes:
   - match:
@@ -199,18 +203,26 @@ includes:
 - **backend.tun.name**: TUN device name used by the TUN backend.
 - **backend.tun.mtu**: TUN MTU used by the TUN backend.
 - **backend.tun.stack**: TUN stack selector. `system` is currently TODO. `smoltcp` enables the experimental userspace TCP/IP stack backend.
+- **backend.tun.platform_dns**: Controls platform DNS automation for `tun + smoltcp`. `auto` enables platform-specific DNS setup; `manual` leaves DNS configuration to the user. The default is `auto` on Windows and `manual` on other platforms.
+- **backend.tun.dns_hijack**: Optional DNS hijack target list for `tun + smoltcp`. `any:53` hijacks UDP DNS to any destination; `tcp://any:53` hijacks TCP DNS to any destination. Reserved in-tunnel DNS addresses are always hijacked even if this list is empty.
 - **includes:** List of structured `match + action` rules (see Rule Matching Modes below)
 
 ### Current TUN Notes
 
 - `backend.tun.stack: smoltcp` is still experimental.
 - The smoltcp backend bridges accepted TCP streams into the existing local HTTP/TLS listeners and resolves UDP/TCP DNS directly in-tunnel.
+- The default `backend.tun.dns_hijack` behavior is equivalent to:
+  - `any:53`
+  - `tcp://any:53`
 - The current address reservation model is:
   - first usable fake IPv4 / IPv6 address: TUN interface address
   - second usable fake IPv4 / IPv6 address: TUN DNS address
   - fake-ip allocation starts from the third usable address
 - On Windows, AnyMirror currently configures the TUN adapter DNS automatically to the reserved in-tunnel DNS address.
-- On Linux, macOS, and other non-Windows desktop platforms, you currently need to point the TUN interface DNS at the reserved in-tunnel DNS address yourself.
+- On Linux, `backend.tun.platform_dns: auto` currently configures TUN link DNS through `resolvectl`.
+- The current Linux automation uses `systemd-resolved` link DNS and routing-domain integration, not `nftables` or `iptables` DNS redirect.
+- On macOS, automatic TUN DNS configuration is not implemented in the current CLI runtime; use `manual` or a `NetworkExtension` host.
+- On other non-Windows desktop platforms, you currently need to point the TUN interface DNS at the reserved in-tunnel DNS address yourself.
 - QUIC is still handled by dropping fake-ip UDP/443 traffic to force TCP/TLS fallback.
 - The `system` TUN stack is still TODO.
 
@@ -219,8 +231,12 @@ includes:
 - Windows:
   - AnyMirror configures the TUN adapter DNS automatically.
   - The TUN backend on Windows also requires `wintun.dll` beside the executable.
-- Non-Windows desktop platforms:
-  - AnyMirror does not yet configure interface DNS automatically.
+- Linux:
+  - Set `backend.tun.platform_dns: auto` to configure link DNS with `resolvectl`.
+  - The current Linux automation uses `systemd-resolved` link DNS and routing-domain integration, not `nftables` or `iptables` DNS redirect.
+  - `manual` leaves DNS setup to you.
+- macOS and other non-Windows desktop platforms:
+  - AnyMirror does not yet configure interface DNS automatically in the current CLI runtime.
   - Point the TUN interface DNS at the reserved TUN DNS address:
     - IPv4: the second usable address in `backend.dns.fake_ipv4_range`
     - IPv6: the second usable address in `backend.dns.fake_ipv6_range`

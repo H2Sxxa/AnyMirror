@@ -146,6 +146,10 @@ backend:
     name: anymirror-tun         # TUN 设备名
     mtu: 1500
     stack: smoltcp              # system 或 smoltcp（system 当前仍是 TODO）
+    platform_dns: auto          # auto 或 manual
+    dns_hijack:                 # 可选：tun+smoltcp 的 DNS 劫持目标
+      - any:53                 # 劫持 UDP DNS
+      - tcp://any:53           # 劫持 TCP DNS
 
 includes:
   - match:
@@ -196,18 +200,26 @@ includes:
 - **backend.tun.name**：TUN 后端使用的设备名。
 - **backend.tun.mtu**：TUN 后端使用的 MTU。
 - **backend.tun.stack**：TUN 栈选择器。`system` 目前还是 TODO；`smoltcp` 会启用实验性的用户态 TCP/IP 栈后端。
+- **backend.tun.platform_dns**：控制 `tun + smoltcp` 的平台 DNS 自动化。`auto` 表示启用平台相关的 DNS 设置；`manual` 表示由用户自己配置。默认值是 Windows 为 `auto`，其他平台为 `manual`。
+- **backend.tun.dns_hijack**：`tun + smoltcp` 的可选 DNS 劫持目标列表。`any:53` 表示劫持发往任意目标的 UDP DNS；`tcp://any:53` 表示劫持发往任意目标的 TCP DNS。即使这个列表为空，保留的 TUN 站内 DNS 地址仍然总会被劫持。
 - **includes：** 结构化 `match + action` 规则列表（见下方规则匹配模式）
 
 ### 当前 TUN 说明
 
 - `backend.tun.stack: smoltcp` 目前仍然是实验性实现。
 - 当前 smoltcp 后端会把接收到的 TCP 流桥接到现有本地 HTTP/TLS listener，并在 TUN 内直接回答 UDP/TCP DNS。
+- 默认的 `backend.tun.dns_hijack` 行为等价于：
+  - `any:53`
+  - `tcp://any:53`
 - 当前地址保留模型是：
   - fake-ip 网段中的第一个可用 IPv4 / IPv6 地址：TUN 接口地址
   - 第二个可用 IPv4 / IPv6 地址：TUN DNS 地址
   - fake-ip 分配从第三个可用地址开始
 - Windows 当前会自动把 TUN 适配器 DNS 配到保留的 TUN DNS 地址。
-- Linux、macOS 和其他非 Windows 桌面平台目前仍需要你手动把 TUN 接口 DNS 指向这个保留的 TUN DNS 地址。
+- Linux 在 `backend.tun.platform_dns: auto` 下，当前会通过 `resolvectl` 自动配置 TUN 链路 DNS。
+- 当前 Linux 自动化走的是 `systemd-resolved` 的链路 DNS 和路由域集成，不是 `nftables` / `iptables` 的 DNS redirect。
+- macOS 在当前 CLI 运行时里还没有自动 TUN DNS 配置；建议使用 `manual`，或者改成 `NetworkExtension` 宿主。
+- 其他非 Windows 桌面平台目前仍需要你手动把 TUN 接口 DNS 指向这个保留的 TUN DNS 地址。
 - QUIC 当前仍然通过丢弃 fake-ip `UDP/443` 来强制客户端回退到 TCP/TLS。
 - `system` TUN 栈目前还是 TODO。
 
@@ -216,8 +228,12 @@ includes:
 - Windows：
   - AnyMirror 会自动给 TUN 适配器配置 DNS。
   - Windows 下的 TUN 后端还要求可执行文件同目录存在 `wintun.dll`。
-- 非 Windows 桌面平台：
-  - AnyMirror 目前不会自动配置接口 DNS。
+- Linux：
+  - 把 `backend.tun.platform_dns` 设成 `auto` 后，会通过 `resolvectl` 自动配置链路 DNS。
+  - 当前 Linux 自动化走的是 `systemd-resolved` 的链路 DNS 和路由域集成，不是 `nftables` / `iptables` 的 DNS redirect。
+  - 设成 `manual` 则由你自己配置。
+- macOS 和其他非 Windows 桌面平台：
+  - AnyMirror 在当前 CLI 运行时中还不会自动配置接口 DNS。
   - 需要你手动把 TUN 接口 DNS 指向保留的 TUN DNS 地址：
     - IPv4：`backend.dns.fake_ipv4_range` 中第二个可用地址
     - IPv6：`backend.dns.fake_ipv6_range` 中第二个可用地址

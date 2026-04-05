@@ -4,12 +4,15 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use tokio::{sync::mpsc, time};
+use tokio::{
+    sync::{mpsc, oneshot},
+    time,
+};
 
 use crate::{
     config::{AppConfig, BackendOptions, load_config},
     rules::pool::LiveRuleSet,
-    workers::Workers,
+    workers::{ShutdownJoinHandle, Workers},
 };
 
 const CONFIG_WATCH_INTERVAL: Duration = Duration::from_secs(1);
@@ -22,16 +25,24 @@ struct StaticConfigSnapshot {
     backend: BackendOptions,
 }
 
+#[derive(Debug, Clone)]
+pub struct ConfigReloadRequest {
+    pub generation: u64,
+    pub config: AppConfig,
+}
+
 pub fn spawn_config_watch(
     path: PathBuf,
     active_config: &AppConfig,
     live_rules: LiveRuleSet,
     workers: Workers,
-    reload_tx: Option<mpsc::UnboundedSender<AppConfig>>,
-) {
+    reload_tx: Option<mpsc::UnboundedSender<ConfigReloadRequest>>,
+) -> ShutdownJoinHandle {
     let mut static_config = StaticConfigSnapshot::from_config(active_config);
+    let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
+    let mut next_generation: u64 = 1;
 
-    workers.spawn("config-watch", async move {
+    let join = workers.spawn("config-watch", async move {
         let mut interval = time::interval(CONFIG_WATCH_INTERVAL);
         let mut last_processed_modified = match read_modified_time(&path) {
             Ok(modified_time) => Some(modified_time),
@@ -55,7 +66,16 @@ pub fn spawn_config_watch(
         );
 
         loop {
-            interval.tick().await;
+            tokio::select! {
+                _ = &mut shutdown_rx => {
+                    tracing::info!(
+                        config_path = %path.display(),
+                        "Config watch stopped"
+                    );
+                    return;
+                }
+                _ = interval.tick() => {}
+            }
 
             let modified_time = match read_modified_time(&path) {
                 Ok(modified_time) => modified_time,
@@ -99,11 +119,16 @@ pub fn spawn_config_watch(
                             StaticConfigSnapshot::from_config(&reloaded_config);
                         tracing::info!(
                             config_path = %path.display(),
+                            generation = next_generation,
                             runtime_changes = %runtime_changes.join("; "),
                             "Config change requires runtime reload"
                         );
                         if let Some(reload_tx) = reload_tx.as_ref() {
-                            if let Err(error) = reload_tx.send(reloaded_config) {
+                            let request = ConfigReloadRequest {
+                                generation: next_generation,
+                                config: reloaded_config,
+                            };
+                            if let Err(error) = reload_tx.send(request) {
                                 tracing::error!(
                                     config_path = %path.display(),
                                     ?error,
@@ -111,6 +136,7 @@ pub fn spawn_config_watch(
                                 );
                             } else {
                                 static_config = next_runtime_snapshot;
+                                next_generation = next_generation.saturating_add(1);
                             }
                         }
                     }
@@ -128,6 +154,8 @@ pub fn spawn_config_watch(
             pending_modified = None;
         }
     });
+
+    ShutdownJoinHandle::new(shutdown_tx, join)
 }
 
 impl StaticConfigSnapshot {

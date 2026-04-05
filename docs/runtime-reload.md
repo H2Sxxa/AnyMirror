@@ -58,10 +58,11 @@ This means:
 
 - unchanged components are kept alive
 - affected components are shut down and started again inside the same process
+- queued runtime reload requests are coalesced by generation, so only the newest pending generation is applied
 
 ## Current Limits
 
-- Reload is sequential, not generation-overlapped.
+- Reload is generation-sequenced, but not generation-overlapped.
 - There can be a short interruption while a component is restarted.
 - Existing transparent connections can be reset when the fake DNS state/runtime or intercept backend is reloaded.
 - Client-side DoH/DoT interception is still not supported.

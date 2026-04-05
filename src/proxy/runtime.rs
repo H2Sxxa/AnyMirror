@@ -12,8 +12,8 @@ use crate::supervisors::{
     InterceptBackendRuntimeConfig, InterceptBackendSupervisor, ListenerSupervisor,
     TlsListenerHandle,
 };
-use crate::watch::spawn_config_watch;
-use crate::workers::Workers;
+use crate::watch::{ConfigReloadRequest, spawn_config_watch};
+use crate::workers::{ShutdownJoinHandle, Workers};
 
 use super::{
     executor::HyperExecutor,
@@ -32,39 +32,64 @@ pub async fn serve_explicit(
     let listener_supervisor = ListenerSupervisor::new(workers.clone());
     let (reload_tx, mut reload_rx) = mpsc::unbounded_channel();
 
-    maybe_spawn_config_watch(
-        watch_config_path,
-        &config,
-        live_rules.clone(),
-        workers,
-        Some(reload_tx),
-    );
-
-    let state = build_state(config.listen_addr, live_rules)?;
+    let state = build_state(config.listen_addr, live_rules.clone())?;
     let app = build_common_router::<HyperExecutor>()
         .fallback(proxy_entry)
         .with_state(state);
     let mut http_handle = listener_supervisor
         .start_http(app.clone(), config.listen_addr)
         .await?;
+    let mut config_watch = maybe_spawn_config_watch(
+        watch_config_path,
+        &config,
+        live_rules.clone(),
+        workers,
+        Some(reload_tx),
+    );
     let mut active_config = config;
+    let mut active_generation: u64 = 0;
 
     loop {
         tokio::select! {
             _ = shutdown_signal() => {
+                if let Some(watch) = config_watch.take() {
+                    watch.shutdown().await;
+                }
                 http_handle.shutdown().await;
                 return Ok(());
             }
             maybe_config = reload_rx.recv() => {
-                let Some(reloaded_config) = maybe_config else {
+                let Some(reload_request) = maybe_config else {
                     continue;
                 };
+                let (reload_request, skipped_generations) =
+                    take_latest_reload_request(reload_request, &mut reload_rx);
+                if skipped_generations > 0 {
+                    tracing::info!(
+                        applied_generation = reload_request.generation,
+                        skipped_generations,
+                        "Coalesced explicit-mode runtime reload requests"
+                    );
+                }
+                if reload_request.generation <= active_generation {
+                    tracing::debug!(
+                        active_generation,
+                        discarded_generation = reload_request.generation,
+                        "Discarded stale explicit-mode runtime reload generation"
+                    );
+                    continue;
+                }
+                let ConfigReloadRequest {
+                    generation,
+                    config: reloaded_config,
+                } = reload_request;
                 if reloaded_config.listen_addr != active_config.listen_addr {
                     http_handle.shutdown().await;
                     http_handle = listener_supervisor
                         .start_http(app.clone(), reloaded_config.listen_addr)
                         .await?;
                 }
+                active_generation = generation;
                 active_config = reloaded_config;
             }
         }
@@ -82,14 +107,6 @@ pub async fn serve_transparent(
     let intercept_supervisor = InterceptBackendSupervisor::new(workers.clone());
     let (reload_tx, mut reload_rx) = mpsc::unbounded_channel();
 
-    maybe_spawn_config_watch(
-        watch_config_path,
-        &config,
-        live_rules.clone(),
-        workers,
-        Some(reload_tx),
-    );
-
     let state = build_state(config.listen_addr, live_rules.clone())?;
     let app = build_common_router::<HyperExecutor>()
         .fallback(transparent_entry)
@@ -104,17 +121,50 @@ pub async fn serve_transparent(
         live_rules,
     )
     .await?;
+    let mut config_watch = maybe_spawn_config_watch(
+        watch_config_path,
+        &config,
+        state.rules.clone(),
+        workers,
+        Some(reload_tx),
+    );
+    let mut active_generation: u64 = 0;
 
     loop {
         tokio::select! {
             _ = shutdown_signal() => {
+                if let Some(watch) = config_watch.take() {
+                    watch.shutdown().await;
+                }
                 runtime.shutdown().await;
                 return Ok(());
             }
             maybe_config = reload_rx.recv() => {
-                let Some(reloaded_config) = maybe_config else {
+                let Some(reload_request) = maybe_config else {
                     continue;
                 };
+                let (reload_request, skipped_generations) =
+                    take_latest_reload_request(reload_request, &mut reload_rx);
+                if skipped_generations > 0 {
+                    tracing::info!(
+                        applied_generation = reload_request.generation,
+                        skipped_generations,
+                        "Coalesced transparent-mode runtime reload requests"
+                    );
+                }
+                if reload_request.generation <= active_generation {
+                    tracing::debug!(
+                        active_generation,
+                        discarded_generation = reload_request.generation,
+                        "Discarded stale transparent-mode runtime reload generation"
+                    );
+                    continue;
+                }
+                let ConfigReloadRequest {
+                    generation,
+                    config: reloaded_config,
+                } = reload_request;
+                tracing::info!(generation, "Applying transparent runtime reload generation");
                 runtime.reload(
                     &listener_supervisor,
                     &fake_dns_supervisor,
@@ -123,6 +173,7 @@ pub async fn serve_transparent(
                     &reloaded_config,
                     state.rules.clone(),
                 ).await?;
+                active_generation = generation;
             }
         }
     }
@@ -142,11 +193,30 @@ fn maybe_spawn_config_watch(
     config: &AppConfig,
     live_rules: LiveRuleSet,
     workers: Workers,
-    reload_tx: Option<mpsc::UnboundedSender<AppConfig>>,
-) {
+    reload_tx: Option<mpsc::UnboundedSender<ConfigReloadRequest>>,
+) -> Option<ShutdownJoinHandle> {
     if let Some(path) = watch_config_path {
-        spawn_config_watch(path, config, live_rules, workers, reload_tx);
+        return Some(spawn_config_watch(
+            path, config, live_rules, workers, reload_tx,
+        ));
     }
+
+    None
+}
+
+fn take_latest_reload_request(
+    initial_request: ConfigReloadRequest,
+    reload_rx: &mut mpsc::UnboundedReceiver<ConfigReloadRequest>,
+) -> (ConfigReloadRequest, usize) {
+    let mut latest_request = initial_request;
+    let mut skipped_generations = 0usize;
+
+    while let Ok(next_request) = reload_rx.try_recv() {
+        latest_request = next_request;
+        skipped_generations += 1;
+    }
+
+    (latest_request, skipped_generations)
 }
 
 struct TransparentRuntimeHandles {
@@ -159,17 +229,17 @@ struct TransparentRuntimeHandles {
 
 impl TransparentRuntimeHandles {
     async fn shutdown(mut self) {
+        if let Some(intercept) = self.intercept.take() {
+            intercept.shutdown().await;
+        }
+        if let Some(dns) = self.dns.take() {
+            dns.shutdown().await;
+        }
         if let Some(http) = self.http.take() {
             http.shutdown().await;
         }
         if let Some(tls) = self.tls.take() {
             tls.shutdown().await;
-        }
-        if let Some(dns) = self.dns.take() {
-            dns.shutdown().await;
-        }
-        if let Some(intercept) = self.intercept.take() {
-            intercept.shutdown().await;
         }
     }
 
