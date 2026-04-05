@@ -107,7 +107,7 @@ anymirror --mode transparent --config config.yml
 
 `--watch-config` hot reloads the config file at runtime. Rule changes are applied in place, and
 affected runtime components are restarted inside the same process. This keeps the process alive,
-but reload is still not zero-downtime. For detailed reload behavior, see [docs/runtime-reload.md](/c:/WorkSpace/rust/anymirror/docs/runtime-reload.md).
+but reload is still not zero-downtime. For detailed reload behavior, see [docs/runtime-reload.md](docs/runtime-reload.md).
 
 ### Mode Support
 
@@ -234,7 +234,7 @@ includes:
 When started with `--watch-config`, AnyMirror polls the resolved config file, debounces editor
 writes using a short stable window, and then applies either in-place rule replacement or
 component-scoped runtime restarts. For the full reload plan and current limits, see
-[docs/runtime-reload.md](/c:/WorkSpace/rust/anymirror/docs/runtime-reload.md).
+[docs/runtime-reload.md](docs/runtime-reload.md).
 
 ### DNS Resolver Modes
 
@@ -261,7 +261,7 @@ Still not supported:
 
 ### Rule Matching Modes
 
-For the internal rule-engine model, load path, runtime match path, and compiled index layout, see [docs/rule-engine.md](/c:/WorkSpace/rust/anymirror/docs/rule-engine.md).
+For the internal rule-engine model, load path, runtime match path, and compiled index layout, see [docs/rule-engine.md](docs/rule-engine.md).
 
 The rule engine only uses structured `match + action` rules:
 
@@ -344,7 +344,7 @@ FakeDnsServer -> Intercept Backend -> Local Proxy -> Mirror/Direct upstream
 ```
 
 For the full transparent architecture, component responsibilities, and request flow, see
-[docs/architecture.md](/c:/WorkSpace/rust/anymirror/docs/architecture.md).
+[docs/architecture.md](docs/architecture.md).
 
 ## Technical Details
 

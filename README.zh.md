@@ -104,7 +104,7 @@ anymirror --mode transparent --config config.yml
 `--config` 也支持简单 alias。例如 `--config mcdev` 会依次尝试当前目录下的
 `config.mcdev.yaml`、`config.mcdev.yml`、`mcdev.yaml`、`mcdev.yml`。
 
-`--watch-config` 支持运行时热重载配置。规则变更会原地生效；其余运行时组件会在同一进程内按受影响范围重启。也就是说进程不退出，但重载仍然不是零中断。更完整的重载行为说明见 [docs/runtime-reload.zh.md](/c:/WorkSpace/rust/anymirror/docs/runtime-reload.zh.md)。
+`--watch-config` 支持运行时热重载配置。规则变更会原地生效；其余运行时组件会在同一进程内按受影响范围重启。也就是说进程不退出，但重载仍然不是零中断。更完整的重载行为说明见 [docs/runtime-reload.zh.md](docs/runtime-reload.zh.md)。
 
 ### 模式支持范围
 
@@ -228,7 +228,7 @@ includes:
 
 ### 配置监视与热重载
 
-使用 `--watch-config` 启动后，AnyMirror 会轮询当前解析出的配置文件路径，并在文件变化时执行防抖后的原地规则替换或组件级重启。完整的重载计划和当前边界见 [docs/runtime-reload.zh.md](/c:/WorkSpace/rust/anymirror/docs/runtime-reload.zh.md)。
+使用 `--watch-config` 启动后，AnyMirror 会轮询当前解析出的配置文件路径，并在文件变化时执行防抖后的原地规则替换或组件级重启。完整的重载计划和当前边界见 [docs/runtime-reload.zh.md](docs/runtime-reload.zh.md)。
 
 ### DNS Resolver 模式
 
@@ -255,7 +255,7 @@ AnyMirror 里有两层不同的 DNS 配置：
 
 ### 规则匹配模式
 
-如果你想看规则引擎的内部模型、加载路径、运行时匹配路径和编译后索引结构，见 [docs/rule-engine.zh.md](/c:/WorkSpace/rust/anymirror/docs/rule-engine.zh.md)。
+如果你想看规则引擎的内部模型、加载路径、运行时匹配路径和编译后索引结构，见 [docs/rule-engine.zh.md](docs/rule-engine.zh.md)。
 
 规则引擎现在只使用结构化的 `match + action` 规则：
 
@@ -337,7 +337,7 @@ includes:
 FakeDnsServer -> Intercept Backend -> Local Proxy -> Mirror/Direct upstream
 ```
 
-完整的透明模式架构、组件职责和请求流程见 [docs/architecture.zh.md](/c:/WorkSpace/rust/anymirror/docs/architecture.zh.md)。
+完整的透明模式架构、组件职责和请求流程见 [docs/architecture.zh.md](docs/architecture.zh.md)。
 
 ## 技术细节
 

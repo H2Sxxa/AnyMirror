@@ -68,6 +68,6 @@
 
 ## 相关文件
 
-- [`src/watch.rs`](/c:/WorkSpace/rust/anymirror/src/watch.rs)
-- [`src/proxy/runtime.rs`](/c:/WorkSpace/rust/anymirror/src/proxy/runtime.rs)
-- [`src/supervisors`](/c:/WorkSpace/rust/anymirror/src/supervisors)
+- [`src/watch.rs`](../src/watch.rs)
+- [`src/proxy/runtime.rs`](../src/proxy/runtime.rs)
+- [`src/supervisors`](../src/supervisors)

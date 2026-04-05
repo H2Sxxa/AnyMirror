@@ -12,16 +12,16 @@ RuleSchema
 ```
 
 - `RuleSchema`
-  - File: [`src/rules/schema.rs`](/c:/WorkSpace/rust/anymirror/src/rules/schema.rs)
+  - File: [`src/rules/schema.rs`](../src/rules/schema.rs)
   - Human-friendly config shape loaded from YAML.
 - `Rule`
-  - File: [`src/rules/model.rs`](/c:/WorkSpace/rust/anymirror/src/rules/model.rs)
+  - File: [`src/rules/model.rs`](../src/rules/model.rs)
   - One normalized and validated rule.
 - `RuleSet`
-  - File: [`src/rules/pool/mod.rs`](/c:/WorkSpace/rust/anymirror/src/rules/pool/mod.rs)
+  - File: [`src/rules/pool/mod.rs`](../src/rules/pool/mod.rs)
   - Holds `Vec<Rule>` plus the compiled index.
 - `LiveRuleSet`
-  - File: [`src/rules/pool/mod.rs`](/c:/WorkSpace/rust/anymirror/src/rules/pool/mod.rs)
+  - File: [`src/rules/pool/mod.rs`](../src/rules/pool/mod.rs)
   - Shared hot-reload handle backed by `ArcSwap<RuleSet>`.
 
 ## Load Path
@@ -38,8 +38,8 @@ config.yml
 
 Related files:
 
-- [`src/rules/compile.rs`](/c:/WorkSpace/rust/anymirror/src/rules/compile.rs)
-- [`src/rules/pool/compiled.rs`](/c:/WorkSpace/rust/anymirror/src/rules/pool/compiled.rs)
+- [`src/rules/compile.rs`](../src/rules/compile.rs)
+- [`src/rules/pool/compiled.rs`](../src/rules/pool/compiled.rs)
 
 ## Runtime Match Path
 
@@ -61,8 +61,8 @@ request URL
 
 Related files:
 
-- [`src/rules/pool/runtime.rs`](/c:/WorkSpace/rust/anymirror/src/rules/pool/runtime.rs)
-- [`src/rules/matching.rs`](/c:/WorkSpace/rust/anymirror/src/rules/matching.rs)
+- [`src/rules/pool/runtime.rs`](../src/rules/pool/runtime.rs)
+- [`src/rules/matching.rs`](../src/rules/matching.rs)
 
 ## DNS Match Path
 
@@ -83,7 +83,7 @@ host
 
 Used by:
 
-- [`src/traffic/shared/dns/mod.rs`](/c:/WorkSpace/rust/anymirror/src/traffic/shared/dns/mod.rs)
+- [`src/traffic/shared/dns/mod.rs`](../src/traffic/shared/dns/mod.rs)
 
 ## Compiled Index
 
@@ -100,8 +100,8 @@ Used by:
 
 Implementation files:
 
-- [`src/rules/pool/compiled.rs`](/c:/WorkSpace/rust/anymirror/src/rules/pool/compiled.rs)
-- [`src/rules/pool/trie.rs`](/c:/WorkSpace/rust/anymirror/src/rules/pool/trie.rs)
+- [`src/rules/pool/compiled.rs`](../src/rules/pool/compiled.rs)
+- [`src/rules/pool/trie.rs`](../src/rules/pool/trie.rs)
 
 ## Current Optimizations
 

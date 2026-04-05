@@ -12,16 +12,16 @@ RuleSchema
 ```
 
 - `RuleSchema`
-  - 文件：[`src/rules/schema.rs`](/c:/WorkSpace/rust/anymirror/src/rules/schema.rs)
+  - 文件：[`src/rules/schema.rs`](../src/rules/schema.rs)
   - 面向 YAML 的可读配置结构。
 - `Rule`
-  - 文件：[`src/rules/model.rs`](/c:/WorkSpace/rust/anymirror/src/rules/model.rs)
+  - 文件：[`src/rules/model.rs`](../src/rules/model.rs)
   - 单条已经规范化、校验过的规则。
 - `RuleSet`
-  - 文件：[`src/rules/pool/mod.rs`](/c:/WorkSpace/rust/anymirror/src/rules/pool/mod.rs)
+  - 文件：[`src/rules/pool/mod.rs`](../src/rules/pool/mod.rs)
   - 持有 `Vec<Rule>` 和编译后的索引。
 - `LiveRuleSet`
-  - 文件：[`src/rules/pool/mod.rs`](/c:/WorkSpace/rust/anymirror/src/rules/pool/mod.rs)
+  - 文件：[`src/rules/pool/mod.rs`](../src/rules/pool/mod.rs)
   - 运行时共享的热更新句柄，底层是 `ArcSwap<RuleSet>`。
 
 ## 加载路径
@@ -38,8 +38,8 @@ config.yml
 
 相关文件：
 
-- [`src/rules/compile.rs`](/c:/WorkSpace/rust/anymirror/src/rules/compile.rs)
-- [`src/rules/pool/compiled.rs`](/c:/WorkSpace/rust/anymirror/src/rules/pool/compiled.rs)
+- [`src/rules/compile.rs`](../src/rules/compile.rs)
+- [`src/rules/pool/compiled.rs`](../src/rules/pool/compiled.rs)
 
 ## 运行时匹配路径
 
@@ -61,8 +61,8 @@ config.yml
 
 相关文件：
 
-- [`src/rules/pool/runtime.rs`](/c:/WorkSpace/rust/anymirror/src/rules/pool/runtime.rs)
-- [`src/rules/matching.rs`](/c:/WorkSpace/rust/anymirror/src/rules/matching.rs)
+- [`src/rules/pool/runtime.rs`](../src/rules/pool/runtime.rs)
+- [`src/rules/matching.rs`](../src/rules/matching.rs)
 
 ## DNS 匹配路径
 
@@ -83,7 +83,7 @@ host
 
 调用方：
 
-- [`src/traffic/shared/dns/mod.rs`](/c:/WorkSpace/rust/anymirror/src/traffic/shared/dns/mod.rs)
+- [`src/traffic/shared/dns/mod.rs`](../src/traffic/shared/dns/mod.rs)
 
 ## 编译后索引
 
@@ -100,8 +100,8 @@ host
 
 实现文件：
 
-- [`src/rules/pool/compiled.rs`](/c:/WorkSpace/rust/anymirror/src/rules/pool/compiled.rs)
-- [`src/rules/pool/trie.rs`](/c:/WorkSpace/rust/anymirror/src/rules/pool/trie.rs)
+- [`src/rules/pool/compiled.rs`](../src/rules/pool/compiled.rs)
+- [`src/rules/pool/trie.rs`](../src/rules/pool/trie.rs)
 
 ## 当前优化点
 
