@@ -30,6 +30,9 @@ pub enum RuleActionSchema {
         upstream: UpstreamPlanSchema,
     },
     Direct,
+    Plugin {
+        name: String,
+    },
     Reject {
         status: Option<u16>,
         message: Option<String>,

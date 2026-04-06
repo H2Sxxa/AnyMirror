@@ -169,6 +169,13 @@ impl TryFrom<RuleActionSchema> for RuleAction {
                 Ok(Self::Mirror(UpstreamPlan::try_from(upstream)?))
             }
             RuleActionSchema::Direct => Ok(Self::Direct),
+            RuleActionSchema::Plugin { name } => {
+                ensure!(
+                    !name.trim().is_empty(),
+                    "plugin action name must not be empty"
+                );
+                Ok(Self::Plugin(name))
+            }
             RuleActionSchema::Reject { status, message } => {
                 let status = status.unwrap_or(403);
                 ensure!(

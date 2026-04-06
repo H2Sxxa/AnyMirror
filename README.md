@@ -362,6 +362,9 @@ FakeDnsServer -> Intercept Backend -> Local Proxy -> Mirror/Direct upstream
 For the full transparent architecture, component responsibilities, and request flow, see
 [docs/architecture.md](docs/architecture.md).
 
+For plugin lifecycle, request/response action overrides, and response flow, see
+[docs/plugin-flow.md](docs/plugin-flow.md).
+
 ## Technical Details
 
 - **IPv4 & IPv6 Dual-Stack Support:**
@@ -394,8 +397,21 @@ For the full transparent architecture, component responsibilities, and request f
 - [x] CLI startup flow with config alias fallback (`--config mcdev` -> `config.mcdev.yml` etc.)
 - [x] Full config watch and runtime hot reload via `--watch-config`
 - [x] Experimental `backend.kind: tun` + `backend.tun.stack: smoltcp` backend with in-tunnel DNS handling
-- [ ] Production-ready cross-platform TUN/TAP support, including the `system` stack and platform-native hosts
+- [x] Plugin runtime with `on_load`, `on_compile`, `on_request`, and `on_response` stages
+- [x] QuickJS plugin engine with module imports, worker pooling, and typed plugin authoring support
+- [x] Plugin request/response orchestration with compiled plugin rules, action overrides, and request/response patching
+- [x] Plugin body permissions with explicit `on_request.body` / `on_response.body` opt-in and lightweight no-body paths
 - [ ] Encrypted DNS interception for DoH/DoT
+- [ ] Rule groups with shared match scope, behaviors, and tags
+- [ ] Built-in response actions such as `respond` for static or template-driven mock replies
+- [ ] Response actions with built-in delay and latency simulation for mock scenarios
+- [ ] OpenAPI / Swagger-backed mock actions for API development workflows
+- [ ] Configurable observability core with in-memory metrics, recent events, and runtime state snapshots
+- [ ] Internal observability HTTP API for metrics, events, workers, and reload/runtime state
+- [ ] Web UI for traffic dashboard, rule debugging, and runtime inspection
+- [ ] System proxy management for explicit mode
 - [ ] Advanced structured matching (`method`, richer path/query constraints, optional wildcard host rules)
 - [ ] Built-in rule presets/import composition
+- [ ] Plugin file watch and automatic plugin-only reload triggers
 - [ ] Traffic monitoring and statistics
+- [ ] Production-ready cross-platform TUN/TAP support, including the `system` stack and platform-native hosts (longer-term)

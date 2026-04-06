@@ -42,6 +42,7 @@ impl Rule {
                     resolve_mirror_upstream(upstream, original, path_suffix),
                 ),
                 RuleAction::Direct => ResolvedRuleAction::Direct(UpstreamPlan::direct(original)),
+                RuleAction::Plugin(plugin) => ResolvedRuleAction::Plugin(plugin.clone()),
                 RuleAction::Reject(reject) => ResolvedRuleAction::Reject(reject.clone()),
             })
     }

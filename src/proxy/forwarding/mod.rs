@@ -1,3 +1,5 @@
+mod plugin;
+
 use axum::{
     body::Body,
     http::{HeaderMap, Method, StatusCode},
@@ -27,11 +29,7 @@ pub(crate) async fn forward_request<E: UpstreamExecutor>(
         None => return json_error(StatusCode::NOT_FOUND, "no matching mirror rule"),
     };
 
-    let message = match matched.action_kind() {
-        RuleActionKind::Mirror => "Forwarding request to upstream mirror",
-        RuleActionKind::Direct => "Forwarding request directly due to matching direct rule",
-        RuleActionKind::Reject => "Rejecting request due to matching reject rule",
-    };
+    let message = rule_action_message(matched.action_kind(), false);
     if let Some(reject) = matched.reject() {
         tracing::info!(
             original_url = %original,
@@ -40,6 +38,18 @@ pub(crate) async fn forward_request<E: UpstreamExecutor>(
             "{message}"
         );
         return reject_response(reject.status, &reject.message);
+    }
+    if let Some(plugin_name) = matched.plugin() {
+        return plugin::forward_plugin_request(
+            state,
+            method,
+            inbound_headers,
+            body,
+            original,
+            source,
+            plugin_name,
+        )
+        .await;
     }
 
     let upstream = matched
@@ -65,6 +75,7 @@ pub(crate) async fn forward_request<E: UpstreamExecutor>(
         RuleActionKind::Direct => {
             build_passthrough_response(executed.response, source, original.as_str())
         }
+        RuleActionKind::Plugin => unreachable!("plugin actions resolve before upstream execution"),
         RuleActionKind::Reject => unreachable!("reject returns before upstream execution"),
     }
 }
@@ -80,15 +91,7 @@ pub(crate) async fn forward_transparent_request<E: UpstreamExecutor>(
     let matched = rules.resolve(&original);
     match matched {
         Some(matched) => {
-            let message = match matched.action_kind() {
-                RuleActionKind::Mirror => "Forwarding transparent request to upstream mirror",
-                RuleActionKind::Direct => {
-                    "Forwarding transparent request directly due to matching direct rule"
-                }
-                RuleActionKind::Reject => {
-                    "Rejecting transparent request due to matching reject rule"
-                }
-            };
+            let message = rule_action_message(matched.action_kind(), true);
             if let Some(reject) = matched.reject() {
                 tracing::info!(
                     original_url = %original,
@@ -97,6 +100,18 @@ pub(crate) async fn forward_transparent_request<E: UpstreamExecutor>(
                     "{message}"
                 );
                 return reject_response(reject.status, &reject.message);
+            }
+            if let Some(plugin_name) = matched.plugin() {
+                return plugin::forward_plugin_request(
+                    state,
+                    method,
+                    inbound_headers,
+                    body,
+                    original,
+                    Some("transparent"),
+                    plugin_name,
+                )
+                .await;
             }
 
             let upstream = matched
@@ -126,6 +141,9 @@ pub(crate) async fn forward_transparent_request<E: UpstreamExecutor>(
                     Some("transparent-direct"),
                     original.as_str(),
                 ),
+                RuleActionKind::Plugin => {
+                    unreachable!("plugin actions resolve before upstream execution")
+                }
                 RuleActionKind::Reject => unreachable!("reject returns before upstream execution"),
             }
         }
@@ -154,6 +172,25 @@ pub(crate) async fn forward_transparent_request<E: UpstreamExecutor>(
                 Some("transparent-direct"),
                 original.as_str(),
             )
+        }
+    }
+}
+
+fn rule_action_message(action_kind: RuleActionKind, transparent: bool) -> &'static str {
+    match (transparent, action_kind) {
+        (false, RuleActionKind::Mirror) => "Forwarding request to upstream mirror",
+        (false, RuleActionKind::Direct) => {
+            "Forwarding request directly due to matching direct rule"
+        }
+        (false, RuleActionKind::Plugin) => "Resolving request through plugin action",
+        (false, RuleActionKind::Reject) => "Rejecting request due to matching reject rule",
+        (true, RuleActionKind::Mirror) => "Forwarding transparent request to upstream mirror",
+        (true, RuleActionKind::Direct) => {
+            "Forwarding transparent request directly due to matching direct rule"
+        }
+        (true, RuleActionKind::Plugin) => "Resolving transparent request through plugin action",
+        (true, RuleActionKind::Reject) => {
+            "Rejecting transparent request due to matching reject rule"
         }
     }
 }

@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use ipnet::{Ipv4Net, Ipv6Net};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::rules::pool::RuleSet;
 use crate::rules::schema::RuleSchema;
@@ -17,6 +17,7 @@ pub struct AppConfig {
     pub listen_addr: SocketAddr,
     pub tls_port: Option<u16>,
     pub backend: BackendOptions,
+    pub plugins: PluginRuntimeOptions,
     pub rules: RuleSet,
 }
 
@@ -92,6 +93,42 @@ pub struct FakeDnsOptions {
     pub record_ttl: Duration,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginRuntimeOptions {
+    pub enabled: bool,
+    pub workers: usize,
+    pub definitions: Vec<PluginDefinition>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub struct PluginPermissions {
+    pub on_request_body: bool,
+    pub on_response_body: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginDefinition {
+    pub name: String,
+    pub engine: PluginEngine,
+    pub enabled: bool,
+    pub root: PathBuf,
+    pub permissions: PluginPermissions,
+    pub config: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PluginEngine {
+    QuickJs,
+}
+
+impl PluginEngine {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::QuickJs => "quickjs",
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct RawConfig {
     #[serde(default = "default_listen_addr")]
@@ -99,6 +136,8 @@ struct RawConfig {
     tls_port: Option<u16>,
     #[serde(default)]
     backend: RawBackendOptions,
+    #[serde(default)]
+    plugins: RawPluginRuntimeOptions,
     #[serde(default, alias = "rules")]
     includes: Vec<RuleSchema>,
 }
@@ -167,6 +206,55 @@ struct RawFakeDnsOptions {
     record_ttl_secs: u64,
 }
 
+#[derive(Debug, Deserialize)]
+struct RawPluginRuntimeOptions {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default = "default_plugin_workers")]
+    workers: usize,
+    #[serde(default)]
+    includes: Vec<RawPluginDefinition>,
+}
+
+impl Default for RawPluginRuntimeOptions {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            workers: default_plugin_workers(),
+            includes: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct RawPluginDefinition {
+    name: String,
+    #[serde(default = "default_plugin_engine")]
+    engine: String,
+    #[serde(default = "default_plugin_enabled")]
+    enabled: bool,
+    #[serde(default)]
+    root: Option<String>,
+    #[serde(default)]
+    permissions: RawPluginPermissions,
+    #[serde(default)]
+    config: serde_yaml::Value,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RawPluginPermissions {
+    #[serde(default)]
+    on_request: RawPluginStagePermissions,
+    #[serde(default)]
+    on_response: RawPluginStagePermissions,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RawPluginStagePermissions {
+    #[serde(default)]
+    body: bool,
+}
+
 impl Default for RawFakeDnsOptions {
     fn default() -> Self {
         Self {
@@ -199,6 +287,10 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<AppConfig> {
         listen_addr,
         tls_port: parsed.tls_port,
         backend: BackendOptions::try_from(parsed.backend)?,
+        plugins: PluginRuntimeOptions::from_raw(
+            parsed.plugins,
+            source_path.parent().unwrap_or_else(|| Path::new(".")),
+        )?,
         rules,
     })
 }
@@ -236,6 +328,20 @@ pub fn resolve_config_path(path: impl AsRef<Path>) -> Result<PathBuf> {
 
 fn default_listen_addr() -> String {
     "127.0.0.1:8787".to_string()
+}
+
+fn default_plugin_workers() -> usize {
+    std::thread::available_parallelism()
+        .map(|parallelism| parallelism.get())
+        .unwrap_or(1)
+}
+
+fn default_plugin_engine() -> String {
+    "quickjs".to_string()
+}
+
+fn default_plugin_enabled() -> bool {
+    true
 }
 
 fn extract_config_alias(path: &Path) -> Option<&str> {
@@ -330,6 +436,67 @@ impl TryFrom<RawTunBackendOptions> for TunBackendOptions {
                 .map(|entry| parse_tun_dns_hijack_spec(entry))
                 .collect::<Result<Vec<_>>>()?,
         })
+    }
+}
+
+impl PluginRuntimeOptions {
+    fn from_raw(value: RawPluginRuntimeOptions, base_dir: &Path) -> Result<Self> {
+        if value.workers == 0 {
+            bail!("plugins.workers must be greater than zero");
+        }
+
+        let definitions = value
+            .includes
+            .into_iter()
+            .map(|definition| PluginDefinition::from_raw(definition, base_dir))
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(Self {
+            enabled: value.enabled,
+            workers: value.workers,
+            definitions,
+        })
+    }
+}
+
+impl PluginDefinition {
+    fn from_raw(value: RawPluginDefinition, base_dir: &Path) -> Result<Self> {
+        if value.name.trim().is_empty() {
+            bail!("plugins.includes[].name must not be empty");
+        }
+        let root_value = value.root.unwrap_or_else(|| value.name.clone());
+        if root_value.trim().is_empty() {
+            bail!("plugin `{}` must define a non-empty root path", value.name);
+        }
+
+        let root = resolve_plugin_root(base_dir, &root_value);
+
+        Ok(Self {
+            name: value.name,
+            engine: parse_plugin_engine(&value.engine)?,
+            enabled: value.enabled,
+            root,
+            permissions: PluginPermissions::from_raw(value.permissions),
+            config: serde_json::to_value(value.config)
+                .context("failed to serialize plugin config into JSON value")?,
+        })
+    }
+}
+
+impl PluginPermissions {
+    fn from_raw(value: RawPluginPermissions) -> Self {
+        Self {
+            on_request_body: value.on_request.body,
+            on_response_body: value.on_response.body,
+        }
+    }
+
+    pub fn allows_request_body(self) -> bool {
+        self.on_request_body
+    }
+
+    pub fn allows_response_body(self) -> bool {
+        self.on_response_body
     }
 }
 
@@ -463,9 +630,35 @@ fn parse_tun_dns_hijack_target(value: &str) -> Result<TunDnsHijackTarget> {
     Ok(TunDnsHijackTarget::Exact(addr))
 }
 
+fn parse_plugin_engine(value: &str) -> Result<PluginEngine> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "quickjs" => Ok(PluginEngine::QuickJs),
+        other => bail!(
+            "unsupported plugin engine `{}`; expected one of: quickjs",
+            other
+        ),
+    }
+}
+
+fn resolve_plugin_root(base_dir: &Path, root: &str) -> PathBuf {
+    let root_path = PathBuf::from(root);
+    if root_path.is_absolute() {
+        root_path
+    } else if root_path.components().count() == 1 {
+        base_dir.join("plugins").join(root_path)
+    } else {
+        base_dir.join(root_path)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{TunDnsHijackTarget, TunDnsHijackTransport, parse_tun_dns_hijack_spec};
+    use std::path::{Path, PathBuf};
+
+    use super::{
+        PluginPermissions, RawPluginPermissions, RawPluginStagePermissions, TunDnsHijackTarget,
+        TunDnsHijackTransport, parse_tun_dns_hijack_spec, resolve_plugin_root,
+    };
 
     #[test]
     fn parses_default_udp_dns_hijack_rule() {
@@ -481,5 +674,43 @@ mod tests {
 
         assert_eq!(spec.transport, TunDnsHijackTransport::Tcp);
         assert_eq!(spec.target, TunDnsHijackTarget::Any(53));
+    }
+
+    #[test]
+    fn resolves_plugin_root_name_into_default_plugins_directory() {
+        let base_dir = Path::new("/workspace/config");
+
+        let resolved = resolve_plugin_root(base_dir, "media_bypass");
+
+        assert_eq!(
+            resolved,
+            PathBuf::from("/workspace/config/plugins/media_bypass")
+        );
+    }
+
+    #[test]
+    fn resolves_explicit_plugins_relative_path_equivalent_to_bare_name() {
+        let base_dir = Path::new("/workspace/config");
+
+        let bare = resolve_plugin_root(base_dir, "media_bypass");
+        let explicit = resolve_plugin_root(base_dir, "./plugins/media_bypass");
+
+        assert_eq!(bare, explicit);
+    }
+
+    #[test]
+    fn parses_plugin_body_permissions() {
+        let permissions = PluginPermissions::from_raw(RawPluginPermissions {
+            on_request: RawPluginStagePermissions { body: true },
+            on_response: RawPluginStagePermissions { body: true },
+        });
+
+        assert_eq!(
+            permissions,
+            PluginPermissions {
+                on_request_body: true,
+                on_response_body: true,
+            }
+        );
     }
 }

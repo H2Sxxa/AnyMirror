@@ -45,6 +45,10 @@ impl RuleSet {
         self.entries.is_empty()
     }
 
+    pub fn iter(&self) -> impl Iterator<Item = &Rule> {
+        self.entries.iter()
+    }
+
     pub fn matches_dns_host(&self, host: &str) -> bool {
         self.index.matches_dns_host(host)
     }
@@ -84,6 +88,10 @@ impl MatchedRule<'_> {
     pub fn reject(&self) -> Option<&RejectRuleAction> {
         self.action.reject()
     }
+
+    pub fn plugin(&self) -> Option<&str> {
+        self.action.plugin()
+    }
 }
 
 impl ResolvedRuleAction {
@@ -91,6 +99,7 @@ impl ResolvedRuleAction {
         match self {
             Self::Mirror(_) => RuleActionKind::Mirror,
             Self::Direct(_) => RuleActionKind::Direct,
+            Self::Plugin(_) => RuleActionKind::Plugin,
             Self::Reject(_) => RuleActionKind::Reject,
         }
     }
@@ -98,14 +107,21 @@ impl ResolvedRuleAction {
     pub fn upstream(&self) -> Option<&UpstreamPlan> {
         match self {
             Self::Mirror(upstream) | Self::Direct(upstream) => Some(upstream),
-            Self::Reject(_) => None,
+            Self::Plugin(_) | Self::Reject(_) => None,
         }
     }
 
     pub fn reject(&self) -> Option<&RejectRuleAction> {
         match self {
             Self::Reject(reject) => Some(reject),
-            Self::Mirror(_) | Self::Direct(_) => None,
+            Self::Mirror(_) | Self::Direct(_) | Self::Plugin(_) => None,
+        }
+    }
+
+    pub fn plugin(&self) -> Option<&str> {
+        match self {
+            Self::Plugin(plugin) => Some(plugin.as_str()),
+            Self::Mirror(_) | Self::Direct(_) | Self::Reject(_) => None,
         }
     }
 }

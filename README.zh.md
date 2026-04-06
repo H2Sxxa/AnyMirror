@@ -355,6 +355,9 @@ FakeDnsServer -> Intercept Backend -> Local Proxy -> Mirror/Direct upstream
 
 完整的透明模式架构、组件职责和请求流程见 [docs/architecture.zh.md](docs/architecture.zh.md)。
 
+插件生命周期、`on_request / on_response` 覆写链路，以及响应流转过程见
+[docs/plugin-flow.zh.md](docs/plugin-flow.zh.md)。
+
 ## 技术细节
 
 - **支持 IPv4 与 IPv6 双栈：**
@@ -387,8 +390,21 @@ FakeDnsServer -> Intercept Backend -> Local Proxy -> Mirror/Direct upstream
 - [x] CLI 启动参数支持配置 alias fallback（如 `--config mcdev` 自动解析到 `config.mcdev.yml`）
 - [x] 通过 `--watch-config` 实现完整配置监视与运行时热重载
 - [x] 实验性的 `backend.kind: tun` + `backend.tun.stack: smoltcp` 后端，支持站内 DNS 解析
-- [ ] 生产可用的跨平台 TUN/TAP 支持，包括 `system` 栈和平台原生宿主
+- [x] 插件运行时，支持 `on_load`、`on_compile`、`on_request`、`on_response` 生命周期
+- [x] 基于 QuickJS 的插件引擎，支持模块导入、worker 池和类型友好的插件编写体验
+- [x] 插件请求/响应编排能力，支持插件规则编译、action override，以及 request/response patch
+- [x] 插件 body 权限控制，支持显式 `on_request.body` / `on_response.body` 开关和轻量无 body 路径
 - [ ] DoH / DoT 等加密 DNS 的拦截支持
+- [ ] 支持规则组，提供共享匹配范围、行为修饰器和标签
+- [ ] 内建 `respond` 等响应动作，用于静态或模板化 mock 返回
+- [ ] 在响应动作中支持内建延迟与延迟模拟能力
+- [ ] 基于 OpenAPI / Swagger 的 mock 动作，用于 API 联调工作流
+- [ ] 可配置的可观测内核，支持进程内指标、最近事件和运行时状态快照
+- [ ] 内部可观测 HTTP API，用于暴露 metrics、events、workers 和 reload/runtime 状态
+- [ ] Web UI，用于流量看板、规则调试和运行时巡检
+- [ ] 显式代理模式下的系统代理管理能力
 - [ ] 更强的结构化匹配（`method`、更丰富的 path/query 约束、可选通配 host 规则）
 - [ ] 内置规则预设与规则集组合
+- [ ] 插件文件监视与仅插件级的自动重载触发
 - [ ] 流量监控和统计
+- [ ] 生产可用的跨平台 TUN/TAP 支持，包括 `system` 栈和平台原生宿主（长期目标）

@@ -52,6 +52,7 @@ pub enum IpPattern {
 pub enum RuleAction {
     Mirror(UpstreamPlan),
     Direct,
+    Plugin(String),
     Reject(RejectRuleAction),
 }
 
@@ -59,6 +60,7 @@ pub enum RuleAction {
 pub enum RuleActionKind {
     Mirror,
     Direct,
+    Plugin,
     Reject,
 }
 
@@ -66,6 +68,7 @@ pub enum RuleActionKind {
 pub enum ResolvedRuleAction {
     Mirror(UpstreamPlan),
     Direct(UpstreamPlan),
+    Plugin(String),
     Reject(RejectRuleAction),
 }
 

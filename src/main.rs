@@ -1,4 +1,5 @@
 mod config;
+mod plugins;
 mod proxy;
 mod rules;
 mod socket;

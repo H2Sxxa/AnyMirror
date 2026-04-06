@@ -10,7 +10,7 @@ use tokio::{
 };
 
 use crate::{
-    config::{AppConfig, BackendOptions, load_config},
+    config::{AppConfig, BackendOptions, PluginRuntimeOptions, load_config},
     rules::pool::LiveRuleSet,
     workers::{ShutdownJoinHandle, Workers},
 };
@@ -23,6 +23,7 @@ struct StaticConfigSnapshot {
     listen_addr: std::net::SocketAddr,
     tls_port: Option<u16>,
     backend: BackendOptions,
+    plugins: PluginRuntimeOptions,
 }
 
 #[derive(Debug, Clone)]
@@ -114,30 +115,37 @@ pub fn spawn_config_watch(
                         "Hot reloaded config rules"
                     );
 
-                    if !runtime_changes.is_empty() {
+                    if let Some(reload_tx) = reload_tx.as_ref() {
                         let next_runtime_snapshot =
                             StaticConfigSnapshot::from_config(&reloaded_config);
-                        tracing::info!(
-                            config_path = %path.display(),
-                            generation = next_generation,
-                            runtime_changes = %runtime_changes.join("; "),
-                            "Config change requires runtime reload"
-                        );
-                        if let Some(reload_tx) = reload_tx.as_ref() {
-                            let request = ConfigReloadRequest {
-                                generation: next_generation,
-                                config: reloaded_config,
-                            };
-                            if let Err(error) = reload_tx.send(request) {
-                                tracing::error!(
-                                    config_path = %path.display(),
-                                    ?error,
-                                    "Failed to enqueue runtime reload"
-                                );
-                            } else {
-                                static_config = next_runtime_snapshot;
-                                next_generation = next_generation.saturating_add(1);
-                            }
+                        if runtime_changes.is_empty() {
+                            tracing::info!(
+                                config_path = %path.display(),
+                                generation = next_generation,
+                                "Config change only affected live rules or plugins; applying generation without component restarts"
+                            );
+                        } else {
+                            tracing::info!(
+                                config_path = %path.display(),
+                                generation = next_generation,
+                                runtime_changes = %runtime_changes.join("; "),
+                                "Config change requires runtime reload"
+                            );
+                        }
+
+                        let request = ConfigReloadRequest {
+                            generation: next_generation,
+                            config: reloaded_config,
+                        };
+                        if let Err(error) = reload_tx.send(request) {
+                            tracing::error!(
+                                config_path = %path.display(),
+                                ?error,
+                                "Failed to enqueue runtime reload"
+                            );
+                        } else {
+                            static_config = next_runtime_snapshot;
+                            next_generation = next_generation.saturating_add(1);
                         }
                     }
                 }
@@ -164,6 +172,7 @@ impl StaticConfigSnapshot {
             listen_addr: config.listen_addr,
             tls_port: config.tls_port,
             backend: config.backend.clone(),
+            plugins: config.plugins.clone(),
         }
     }
 
@@ -186,6 +195,10 @@ impl StaticConfigSnapshot {
 
         if config.backend != self.backend {
             changes.push("backend settings changed".to_string());
+        }
+
+        if config.plugins != self.plugins {
+            changes.push("plugin settings changed".to_string());
         }
 
         changes

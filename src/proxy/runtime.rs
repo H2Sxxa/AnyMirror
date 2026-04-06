@@ -1,16 +1,17 @@
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use axum::Router;
 use tokio::sync::mpsc;
 
 use crate::config::AppConfig;
 use crate::config::{BackendOptions, TransparentBackendKind, TunStack};
+use crate::plugins::LivePluginRegistry;
 use crate::rules::pool::LiveRuleSet;
 use crate::supervisors::{
     FakeDnsInstance, FakeDnsSupervisor, HttpListenerHandle, InterceptBackendHandle,
     InterceptBackendRuntimeConfig, InterceptBackendSupervisor, ListenerSupervisor,
-    TlsListenerHandle,
+    PluginSupervisor, TlsListenerHandle,
 };
 use crate::watch::{ConfigReloadRequest, spawn_config_watch};
 use crate::workers::{ShutdownJoinHandle, Workers};
@@ -29,13 +30,18 @@ pub async fn serve_explicit(
     workers: Workers,
 ) -> Result<()> {
     let live_rules = LiveRuleSet::new(config.rules.clone());
+    let plugin_supervisor = PluginSupervisor::new(workers.clone());
+    let live_plugins = plugin_supervisor
+        .start(&config.plugins, live_rules.clone())
+        .await
+        .context("failed to initialize plugin registry")?;
     let listener_supervisor = ListenerSupervisor::new(workers.clone());
     let (reload_tx, mut reload_rx) = mpsc::unbounded_channel();
 
-    let state = build_state(config.listen_addr, live_rules.clone())?;
+    let state = build_state(config.listen_addr, live_rules.clone(), live_plugins.clone())?;
     let app = build_common_router::<HyperExecutor>()
         .fallback(proxy_entry)
-        .with_state(state);
+        .with_state(state.clone());
     let mut http_handle = listener_supervisor
         .start_http(app.clone(), config.listen_addr)
         .await?;
@@ -43,7 +49,7 @@ pub async fn serve_explicit(
         watch_config_path,
         &config,
         live_rules.clone(),
-        workers,
+        workers.clone(),
         Some(reload_tx),
     );
     let mut active_config = config;
@@ -83,6 +89,10 @@ pub async fn serve_explicit(
                     generation,
                     config: reloaded_config,
                 } = reload_request;
+                plugin_supervisor
+                    .reload(&state.plugins, &reloaded_config.plugins, state.rules.clone())
+                    .await
+                    .context("failed to rebuild plugin registry during explicit reload")?;
                 if reloaded_config.listen_addr != active_config.listen_addr {
                     http_handle.shutdown().await;
                     http_handle = listener_supervisor
@@ -102,12 +112,17 @@ pub async fn serve_transparent(
     workers: Workers,
 ) -> Result<()> {
     let live_rules = LiveRuleSet::new(config.rules.clone());
+    let plugin_supervisor = PluginSupervisor::new(workers.clone());
+    let live_plugins = plugin_supervisor
+        .start(&config.plugins, live_rules.clone())
+        .await
+        .context("failed to initialize plugin registry")?;
     let listener_supervisor = ListenerSupervisor::new(workers.clone());
     let fake_dns_supervisor = FakeDnsSupervisor::new(workers.clone());
     let intercept_supervisor = InterceptBackendSupervisor::new(workers.clone());
     let (reload_tx, mut reload_rx) = mpsc::unbounded_channel();
 
-    let state = build_state(config.listen_addr, live_rules.clone())?;
+    let state = build_state(config.listen_addr, live_rules.clone(), live_plugins.clone())?;
     let app = build_common_router::<HyperExecutor>()
         .fallback(transparent_entry)
         .with_state(state.clone());
@@ -125,7 +140,7 @@ pub async fn serve_transparent(
         watch_config_path,
         &config,
         state.rules.clone(),
-        workers,
+        workers.clone(),
         Some(reload_tx),
     );
     let mut active_generation: u64 = 0;
@@ -164,6 +179,10 @@ pub async fn serve_transparent(
                     generation,
                     config: reloaded_config,
                 } = reload_request;
+                plugin_supervisor
+                    .reload(&state.plugins, &reloaded_config.plugins, state.rules.clone())
+                    .await
+                    .context("failed to rebuild plugin registry during transparent reload")?;
                 tracing::info!(generation, "Applying transparent runtime reload generation");
                 runtime.reload(
                     &listener_supervisor,
@@ -182,10 +201,15 @@ pub async fn serve_transparent(
 fn build_state(
     _listen_addr: std::net::SocketAddr,
     rules: LiveRuleSet,
+    plugins: LivePluginRegistry,
 ) -> Result<AppState<HyperExecutor>> {
     let executor = HyperExecutor::new()?;
 
-    Ok(AppState { executor, rules })
+    Ok(AppState {
+        executor,
+        plugins,
+        rules,
+    })
 }
 
 fn maybe_spawn_config_watch(

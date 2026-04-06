@@ -83,7 +83,7 @@ pub fn run_transparent_intercept_backend(
             {
                 let _ = (listen_addr, fake_dns_server, workers, runtime_config);
                 anyhow::bail!(
-                    "backend.kind=windivert is only supported on Windows; use backend.kind=tun for the future TUN backend"
+                    "backend.kind=windivert is only supported on Windows; use backend.kind=tun for the experimental TUN backend"
                 )
             }
         }

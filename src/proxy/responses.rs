@@ -53,6 +53,7 @@ pub(crate) fn rule_action_name(matched: MatchedRule<'_>) -> &'static str {
     match matched.action_kind() {
         RuleActionKind::Mirror => "mirror",
         RuleActionKind::Direct => "direct",
+        RuleActionKind::Plugin => "plugin",
         RuleActionKind::Reject => "reject",
     }
 }
