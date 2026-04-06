@@ -8,8 +8,8 @@
  */
 export function on_event(context) {
   const state = context.input.plugin.state || {
-    host: "www.baidu.com",
-    mirror_url: "https://cn.bing.com/",
+    host: "example.com",
+    mirror_url: "https://mirror.example.com/",
     control_header: "x-anymirror-example",
     response_header: "x-anymirror-example"
   };
@@ -21,12 +21,12 @@ export function on_event(context) {
       rules: [
         {
           match: {
-            host: state.host || "www.baidu.com"
+            host: state.host || "example.com"
           },
           action: {
             type: "mirror",
             upstream: {
-              url: state.mirror_url || "https://cn.bing.com/"
+              url: state.mirror_url || "https://mirror.example.com/"
             }
           }
         }

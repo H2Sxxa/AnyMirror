@@ -1,6 +1,7 @@
 # Example Plugin
 
-This example is intentionally small and easy to verify.
+This example is intentionally small and easy to verify once you replace the placeholder origin and
+mirror with hosts that are reachable from your current network environment.
 
 It demonstrates:
 
@@ -23,14 +24,14 @@ plugins:
   includes:
     - name: example
       config:
-        host: www.baidu.com
-        mirror_url: https://cn.bing.com/
+        host: example.com
+        mirror_url: https://mirror.example.com/
         control_header: x-anymirror-example
         response_header: x-anymirror-example
 
 includes:
   - match:
-      host: www.baidu.com
+      host: example.com
     action:
       type: plugin
       name: example
@@ -40,8 +41,8 @@ includes:
 
 The compiled default action is:
 
-- match `host = www.baidu.com`
-- action `mirror -> https://cn.bing.com/`
+- match `host = example.com`
+- action `mirror -> https://mirror.example.com/`
 
 At request time, `on_request` checks the `x-anymirror-example` header:
 
@@ -63,32 +64,35 @@ Start AnyMirror in explicit mode:
 anymirror --mode explicit --config config.yml
 ```
 
+Before running the commands below, change `host` and `mirror_url` in the plugin config to a plain
+HTTP origin and a reachable mirror URL in your own environment.
+
 Mirror:
 
 ```bash
-curl -i --proxy http://127.0.0.1:8787 http://www.baidu.com/
+curl -i --proxy http://127.0.0.1:8787 http://your-origin.example/
 ```
 
 Expected:
 
 - `x-anymirror-example-action: mirror`
-- `x-anymirror-target: https://cn.bing.com/`
+- `x-anymirror-target` points to your configured `mirror_url`
 
 Direct:
 
 ```bash
-curl -i --proxy http://127.0.0.1:8787 http://www.baidu.com/ -H "x-anymirror-example: direct"
+curl -i --proxy http://127.0.0.1:8787 http://your-origin.example/ -H "x-anymirror-example: direct"
 ```
 
 Expected:
 
 - `x-anymirror-example-action: direct`
-- `x-anymirror-target: http://www.baidu.com/`
+- `x-anymirror-target` points to the original request URL
 
 Reject:
 
 ```bash
-curl -i --proxy http://127.0.0.1:8787 http://www.baidu.com/ -H "x-anymirror-example: reject"
+curl -i --proxy http://127.0.0.1:8787 http://your-origin.example/ -H "x-anymirror-example: reject"
 ```
 
 Expected:
@@ -102,7 +106,7 @@ The current explicit proxy build does not support HTTP `CONNECT` tunnels yet.
 That means commands like this will fail for HTTPS targets:
 
 ```bash
-curl -i --proxy http://127.0.0.1:8787 https://www.baidu.com/
+curl -i --proxy http://127.0.0.1:8787 https://your-origin.example/
 ```
 
-That is why this example uses `http://www.baidu.com/` for explicit-mode verification.
+That is why this example uses `http://...` for explicit-mode verification.

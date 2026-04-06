@@ -15,8 +15,8 @@ export function on_event(context) {
 
   return {
     state: {
-      host: config.host || "www.baidu.com",
-      mirror_url: config.mirror_url || "https://cn.bing.com/",
+      host: config.host || "example.com",
+      mirror_url: config.mirror_url || "https://mirror.example.com/",
       control_header: (config.control_header || "x-anymirror-example").toLowerCase(),
       response_header: (config.response_header || "x-anymirror-example").toLowerCase()
     }
