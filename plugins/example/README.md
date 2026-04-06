@@ -10,7 +10,7 @@ It demonstrates:
 - `on_response`: add visible response headers
 
 It does **not** request body permissions, so it stays on the lightweight plugin path.
-It is easiest to validate in **explicit proxy mode** with a single public echo service.
+It is easiest to validate in **explicit mode** with a plain HTTP request.
 
 ## Suggested Config
 
@@ -23,14 +23,14 @@ plugins:
   includes:
     - name: example
       config:
-        host: httpbin.org
-        mirror_url: https://httpbin.org/anything/mirror
+        host: www.baidu.com
+        mirror_url: https://cn.bing.com/
         control_header: x-anymirror-example
         response_header: x-anymirror-example
 
 includes:
   - match:
-      host: httpbin.org
+      host: www.baidu.com
     action:
       type: plugin
       name: example
@@ -40,8 +40,8 @@ includes:
 
 The compiled default action is:
 
-- match `host = httpbin.org`
-- action `mirror -> https://httpbin.org/anything/mirror`
+- match `host = www.baidu.com`
+- action `mirror -> https://cn.bing.com/`
 
 At request time, `on_request` checks the `x-anymirror-example` header:
 
@@ -66,34 +66,43 @@ anymirror --mode explicit --config config.yml
 Mirror:
 
 ```bash
-curl -i --proxy http://127.0.0.1:8787 https://httpbin.org/anything/original
+curl -i --proxy http://127.0.0.1:8787 http://www.baidu.com/
 ```
 
 Expected:
 
 - `x-anymirror-example-action: mirror`
-- `x-anymirror-target: https://httpbin.org/anything/mirror`
-- JSON body URL/path points to `/anything/mirror`
+- `x-anymirror-target: https://cn.bing.com/`
 
 Direct:
 
 ```bash
-curl -i --proxy http://127.0.0.1:8787 https://httpbin.org/anything/original -H "x-anymirror-example: direct"
+curl -i --proxy http://127.0.0.1:8787 http://www.baidu.com/ -H "x-anymirror-example: direct"
 ```
 
 Expected:
 
 - `x-anymirror-example-action: direct`
-- `x-anymirror-target: https://httpbin.org/anything/original`
-- JSON body URL/path stays on `/anything/original`
+- `x-anymirror-target: http://www.baidu.com/`
 
 Reject:
 
 ```bash
-curl -i --proxy http://127.0.0.1:8787 https://httpbin.org/anything/original -H "x-anymirror-example: reject"
+curl -i --proxy http://127.0.0.1:8787 http://www.baidu.com/ -H "x-anymirror-example: reject"
 ```
 
 Expected:
 
 - HTTP `451`
 - body contains `rejected by example plugin`
+
+## Explicit Mode Limitation
+
+The current explicit proxy build does not support HTTP `CONNECT` tunnels yet.
+That means commands like this will fail for HTTPS targets:
+
+```bash
+curl -i --proxy http://127.0.0.1:8787 https://www.baidu.com/
+```
+
+That is why this example uses `http://www.baidu.com/` for explicit-mode verification.

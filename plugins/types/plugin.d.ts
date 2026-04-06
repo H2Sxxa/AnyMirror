@@ -1,5 +1,8 @@
 type PluginStage = "on_load" | "on_compile" | "on_request" | "on_response";
 
+type JsonPrimitive = string | number | boolean | null;
+type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+
 interface PluginStagePermissions {
   body: boolean;
 }
@@ -25,23 +28,27 @@ interface BodyInput {
   value: string;
 }
 
-interface PluginLoadInput {
+interface PluginLoadInput<TConfig = JsonValue> {
   plugin: PluginIdentity & {
-    config: unknown;
+    config: TConfig;
   };
 }
 
-interface PluginCompileInput {
+interface PluginCompileInput<TConfig = JsonValue, TState = JsonValue> {
   plugin: PluginIdentity & {
-    config: unknown;
-    state: unknown;
+    config: TConfig;
+    state: TState;
   };
 }
 
-interface PluginStagePluginInput extends PluginIdentity {
-  config: unknown;
-  state: unknown;
-  program: unknown;
+interface PluginStagePluginInput<
+  TConfig = JsonValue,
+  TState = JsonValue,
+  TProgram = PluginCompiledProgram
+> extends PluginIdentity {
+  config: TConfig;
+  state: TState;
+  program: TProgram;
 }
 
 interface PluginRequestInput {
@@ -105,7 +112,7 @@ interface PluginCompiledRule {
 
 interface PluginCompiledProgram {
   rules?: PluginCompiledRule[];
-  [key: string]: unknown;
+  [key: string]: JsonValue | PluginCompiledRule[] | undefined;
 }
 
 interface MatchContext {
@@ -113,14 +120,22 @@ interface MatchContext {
   action: PluginAction;
 }
 
-interface RequestStageInput {
-  plugin: PluginStagePluginInput;
+interface RequestStageInput<
+  TConfig = JsonValue,
+  TState = JsonValue,
+  TProgram = PluginCompiledProgram
+> {
+  plugin: PluginStagePluginInput<TConfig, TState, TProgram>;
   request: PluginRequestInput;
   matched?: MatchContext;
 }
 
-interface ResponseStageInput {
-  plugin: PluginStagePluginInput;
+interface ResponseStageInput<
+  TConfig = JsonValue,
+  TState = JsonValue,
+  TProgram = PluginCompiledProgram
+> {
+  plugin: PluginStagePluginInput<TConfig, TState, TProgram>;
   request: PluginRequestInput;
   matched?: MatchContext;
   resolved_action: PluginAction;
@@ -137,17 +152,27 @@ interface PluginContext<TInput> {
   input: TInput;
 }
 
-type LoadContext = PluginContext<PluginLoadInput>;
-type CompileContext = PluginContext<PluginCompileInput>;
-type RequestContext = PluginContext<RequestStageInput>;
-type ResponseContext = PluginContext<ResponseStageInput>;
+type LoadContext<TConfig = JsonValue> = PluginContext<PluginLoadInput<TConfig>>;
+type CompileContext<TConfig = JsonValue, TState = JsonValue> = PluginContext<
+  PluginCompileInput<TConfig, TState>
+>;
+type RequestContext<
+  TConfig = JsonValue,
+  TState = JsonValue,
+  TProgram = PluginCompiledProgram
+> = PluginContext<RequestStageInput<TConfig, TState, TProgram>>;
+type ResponseContext<
+  TConfig = JsonValue,
+  TState = JsonValue,
+  TProgram = PluginCompiledProgram
+> = PluginContext<ResponseStageInput<TConfig, TState, TProgram>>;
 
-interface LoadOutput {
-  state?: unknown;
+interface LoadOutput<TState = JsonValue> {
+  state?: TState;
 }
 
-interface CompileOutput {
-  program?: PluginCompiledProgram;
+interface CompileOutput<TProgram = PluginCompiledProgram> {
+  program?: TProgram;
 }
 
 interface RequestOutput {
@@ -158,7 +183,7 @@ interface RequestOutput {
     headers?: Record<string, string | null>;
     body?: {
       text?: string;
-      json?: unknown;
+      json?: JsonValue;
       base64?: string;
     };
   };
@@ -169,7 +194,7 @@ interface ResponseOutput {
   headers?: Record<string, string | null>;
   body?: {
     text?: string;
-    json?: unknown;
+    json?: JsonValue;
     base64?: string;
   };
 }

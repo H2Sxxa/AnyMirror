@@ -1,13 +1,13 @@
 // @ts-check
 /// <reference path="../types/plugin.d.ts" />
+/// <reference path="./types.d.ts" />
 
 /**
- * @param {ResponseContext} context
+ * @param {ResponseContext<ExampleConfig, ExampleState, ExampleProgram>} context
  * @returns {ResponseOutput | null}
  */
 export function on_event(context) {
-  const program =
-    /** @type {{ response_header?: string }} */ (context.input.plugin.program || {});
+  const program = context.input.plugin.program;
   const responseHeader = (program.response_header || "x-anymirror-example").toLowerCase();
 
   return {

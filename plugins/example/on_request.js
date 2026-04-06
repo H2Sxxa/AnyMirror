@@ -1,15 +1,15 @@
 // @ts-check
 /// <reference path="../types/plugin.d.ts" />
+/// <reference path="./types.d.ts" />
 
 import console from "@anymirror/console";
 
 /**
- * @param {RequestContext} context
+ * @param {RequestContext<ExampleConfig, ExampleState, ExampleProgram>} context
  * @returns {RequestOutput | null}
  */
 export function on_event(context) {
-  const program =
-    /** @type {{ control_header?: string }} */ (context.input.plugin.program || {});
+  const program = context.input.plugin.program;
   const controlHeader = (program.control_header || "x-anymirror-example").toLowerCase();
   const controlValue =
     context.input.request.headers.find(

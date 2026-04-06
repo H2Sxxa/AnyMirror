@@ -1,15 +1,18 @@
 // @ts-check
 /// <reference path="../types/plugin.d.ts" />
+/// <reference path="./types.d.ts" />
 
 /**
- * @param {CompileContext} context
- * @returns {CompileOutput}
+ * @param {CompileContext<ExampleConfig, ExampleState>} context
+ * @returns {CompileOutput<ExampleProgram>}
  */
 export function on_event(context) {
-  const state =
-    /** @type {{ host?: string, mirror_url?: string, control_header?: string, response_header?: string }} */ (
-      context.input.plugin.state || {}
-    );
+  const state = context.input.plugin.state || {
+    host: "www.baidu.com",
+    mirror_url: "https://cn.bing.com/",
+    control_header: "x-anymirror-example",
+    response_header: "x-anymirror-example"
+  };
 
   return {
     program: {
@@ -18,12 +21,12 @@ export function on_event(context) {
       rules: [
         {
           match: {
-            host: state.host || "httpbin.org"
+            host: state.host || "www.baidu.com"
           },
           action: {
             type: "mirror",
             upstream: {
-              url: state.mirror_url || "https://httpbin.org/anything/mirror"
+              url: state.mirror_url || "https://cn.bing.com/"
             }
           }
         }
