@@ -6,7 +6,7 @@ use axum::{
 use url::Url;
 
 use super::super::{
-    executor::UpstreamExecutor, forwarding::forward_request,
+    executors::UpstreamExecutor, forwarding::forward_request,
     request_parser::ensure_supported_method, responses::json_error, state::AppState,
 };
 

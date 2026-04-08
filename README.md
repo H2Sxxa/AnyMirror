@@ -153,6 +153,10 @@ backend:
     dns_hijack:                 # Optional: DNS hijack targets for tun+smoltcp
       - any:53                 # UDP DNS hijack
       - tcp://any:53           # TCP DNS hijack
+telemetry:
+  enabled: true
+  service_name: anymirror
+  otlp_endpoint: http://127.0.0.1:4317   # Jaeger / OTel Collector OTLP gRPC endpoint
 
 includes:
   - match:

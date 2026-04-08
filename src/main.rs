@@ -4,6 +4,7 @@ mod proxy;
 mod rules;
 mod socket;
 mod supervisors;
+mod telemetry;
 mod traffic;
 mod watch;
 mod workers;
@@ -12,7 +13,6 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ServerMode {
@@ -38,17 +38,11 @@ pub struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "anymirror=debug,tower_http=debug".into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .init();
     let _ = rustls::crypto::ring::default_provider().install_default();
     let cli = Cli::parse();
     let config_path = config::resolve_config_path(&cli.config)?;
     let config = config::load_config(&config_path)?;
+    let telemetry_guard = telemetry::init_tracing(&config.telemetry)?;
     let workers = workers::Workers::new();
 
     let banner = cfonts::render(cfonts::Options {
@@ -67,13 +61,24 @@ async fn main() -> Result<()> {
         cli.mode
     );
     tracing::info!("config loaded from {}", config_path.display());
+    if config.telemetry.enabled {
+        tracing::info!(
+            service_name = %config.telemetry.service_name,
+            otlp_endpoint = %config.telemetry.otlp_endpoint,
+            "OpenTelemetry trace export enabled"
+        );
+    }
 
     let watch_config_path = cli.watch_config.then_some(config_path.clone());
 
-    match cli.mode {
+    let result = match cli.mode {
         ServerMode::Explicit => proxy::serve_explicit(config, watch_config_path, workers).await,
         ServerMode::Transparent => {
             proxy::serve_transparent(config, watch_config_path, workers).await
         }
-    }
+    };
+
+    result?;
+    telemetry_guard.shutdown()?;
+    Ok(())
 }

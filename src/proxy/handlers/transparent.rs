@@ -1,7 +1,7 @@
 use axum::{body::Body, extract::State, http::HeaderValue, http::Request, response::Response};
 
 use super::super::{
-    executor::UpstreamExecutor,
+    executors::UpstreamExecutor,
     forwarding::forward_transparent_request,
     request_parser::{ORIGINAL_SCHEME_HEADER, resolve_transparent_target},
     state::AppState,

@@ -17,6 +17,7 @@ pub struct AppConfig {
     pub listen_addr: SocketAddr,
     pub tls_port: Option<u16>,
     pub backend: BackendOptions,
+    pub telemetry: TelemetryOptions,
     pub plugins: PluginRuntimeOptions,
     pub rules: RuleSet,
 }
@@ -100,6 +101,13 @@ pub struct PluginRuntimeOptions {
     pub definitions: Vec<PluginDefinition>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TelemetryOptions {
+    pub enabled: bool,
+    pub service_name: String,
+    pub otlp_endpoint: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 pub struct PluginPermissions {
     pub on_request_body: bool,
@@ -136,6 +144,8 @@ struct RawConfig {
     tls_port: Option<u16>,
     #[serde(default)]
     backend: RawBackendOptions,
+    #[serde(default)]
+    telemetry: RawTelemetryOptions,
     #[serde(default)]
     plugins: RawPluginRuntimeOptions,
     #[serde(default, alias = "rules")]
@@ -216,12 +226,32 @@ struct RawPluginRuntimeOptions {
     includes: Vec<RawPluginDefinition>,
 }
 
+#[derive(Debug, Deserialize)]
+struct RawTelemetryOptions {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default = "default_telemetry_service_name")]
+    service_name: String,
+    #[serde(default = "default_telemetry_otlp_endpoint")]
+    otlp_endpoint: String,
+}
+
 impl Default for RawPluginRuntimeOptions {
     fn default() -> Self {
         Self {
             enabled: false,
             workers: default_plugin_workers(),
             includes: Vec::new(),
+        }
+    }
+}
+
+impl Default for RawTelemetryOptions {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            service_name: default_telemetry_service_name(),
+            otlp_endpoint: default_telemetry_otlp_endpoint(),
         }
     }
 }
@@ -287,6 +317,7 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<AppConfig> {
         listen_addr,
         tls_port: parsed.tls_port,
         backend: BackendOptions::try_from(parsed.backend)?,
+        telemetry: TelemetryOptions::try_from(parsed.telemetry)?,
         plugins: PluginRuntimeOptions::from_raw(
             parsed.plugins,
             source_path.parent().unwrap_or_else(|| Path::new(".")),
@@ -342,6 +373,14 @@ fn default_plugin_engine() -> String {
 
 fn default_plugin_enabled() -> bool {
     true
+}
+
+fn default_telemetry_service_name() -> String {
+    env!("CARGO_PKG_NAME").to_string()
+}
+
+fn default_telemetry_otlp_endpoint() -> String {
+    "http://127.0.0.1:4317".to_string()
 }
 
 fn extract_config_alias(path: &Path) -> Option<&str> {
@@ -455,6 +494,25 @@ impl PluginRuntimeOptions {
             enabled: value.enabled,
             workers: value.workers,
             definitions,
+        })
+    }
+}
+
+impl TryFrom<RawTelemetryOptions> for TelemetryOptions {
+    type Error = anyhow::Error;
+
+    fn try_from(value: RawTelemetryOptions) -> Result<Self> {
+        if value.service_name.trim().is_empty() {
+            bail!("telemetry.service_name must not be empty");
+        }
+        if value.otlp_endpoint.trim().is_empty() {
+            bail!("telemetry.otlp_endpoint must not be empty");
+        }
+
+        Ok(Self {
+            enabled: value.enabled,
+            service_name: value.service_name,
+            otlp_endpoint: value.otlp_endpoint,
         })
     }
 }

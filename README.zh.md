@@ -150,6 +150,10 @@ backend:
     dns_hijack:                 # 可选：tun+smoltcp 的 DNS 劫持目标
       - any:53                 # 劫持 UDP DNS
       - tcp://any:53           # 劫持 TCP DNS
+telemetry:
+  enabled: true
+  service_name: anymirror
+  otlp_endpoint: http://127.0.0.1:4317   # 指向 Jaeger / OTel Collector OTLP gRPC
 
 includes:
   - match:

@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
+use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
@@ -11,6 +12,7 @@ use rquickjs::{
 };
 use serde_json::Value;
 use tokio::sync::oneshot;
+use tracing::Span;
 
 use super::loader::{PluginModuleLoader, PluginModuleResolver, SharedLoaderState};
 use crate::plugins::{PluginStage, ScriptRuntimePool};
@@ -33,15 +35,22 @@ struct QuickJsTask {
     plugin_root: PathBuf,
     entry_module_name: String,
     input: Value,
+    trace: QuickJsTraceContext,
     reply: oneshot::Sender<Result<Value>>,
 }
 
+struct QuickJsTraceContext {
+    parent_span: Span,
+    enqueued_at: Instant,
+}
+
 struct QuickJsWorker {
-    runtime: QuickJsRuntime,
-    context: QuickJsContext,
-    loader_state: SharedLoaderState,
-    console_state: Arc<Mutex<ConsoleState>>,
     handler_cache: Mutex<std::collections::HashMap<String, Persistent<Function<'static>>>>,
+    console_state: Arc<Mutex<ConsoleState>>,
+    loader_state: SharedLoaderState,
+    context: QuickJsContext,
+    // Drop runtime last, after persistent handles and context have been released.
+    runtime: QuickJsRuntime,
 }
 
 #[derive(Default)]
@@ -136,6 +145,7 @@ impl ScriptRuntimePool for QuickJsPool {
             plugin_root: plugin_root.to_path_buf(),
             entry_module_name: entry_module_name.to_string(),
             input: input.clone(),
+            trace: QuickJsTraceContext::capture_current(),
             reply: reply_tx,
         })
         .map_err(|_| {
@@ -176,11 +186,11 @@ impl QuickJsWorker {
         context.with(|ctx| install_console_bridge(&ctx, console_state.clone()))?;
 
         Ok(Self {
-            runtime,
-            context,
-            loader_state,
-            console_state,
             handler_cache: Mutex::new(std::collections::HashMap::new()),
+            console_state,
+            loader_state,
+            context,
+            runtime,
         })
     }
 
@@ -301,9 +311,39 @@ fn quickjs_worker_loop(
             }
         };
 
-        let result = worker.execute(&task);
+        let execute_span = build_quickjs_execute_span(&task);
+        let result = {
+            let _entered = execute_span.enter();
+            worker.execute(&task)
+        };
         pending_tasks.fetch_sub(1, Ordering::AcqRel);
         let _ = task.reply.send(result);
+    }
+}
+
+impl QuickJsTraceContext {
+    fn capture_current() -> Self {
+        Self {
+            parent_span: Span::current(),
+            enqueued_at: Instant::now(),
+        }
+    }
+}
+
+fn build_quickjs_execute_span(task: &QuickJsTask) -> Span {
+    tracing::info_span!(
+        parent: &task.trace.parent_span,
+        "plugin.quickjs.execute",
+        plugin = %task.plugin_name,
+        stage = task.stage.label(),
+        queue_wait_ms = elapsed_millis(task.trace.enqueued_at)
+    )
+}
+
+fn elapsed_millis(start: Instant) -> u64 {
+    match u64::try_from(start.elapsed().as_millis()) {
+        Ok(value) => value,
+        Err(_) => u64::MAX,
     }
 }
 

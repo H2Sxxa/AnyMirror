@@ -9,10 +9,11 @@ use axum::{
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use bytes::Bytes;
 use http_body_util::BodyExt;
+use tracing::{Instrument, Span, field};
 use url::Url;
 
 use super::super::{
-    executor::UpstreamExecutor,
+    executors::UpstreamExecutor,
     responses::{json_error, reject_response},
     state::AppState,
 };
@@ -69,138 +70,193 @@ pub(super) async fn forward_plugin_request<E: UpstreamExecutor>(
     source: Option<&str>,
     plugin_name: &str,
 ) -> Response {
+    let request_span = Span::current();
     let plugins = state.plugins.snapshot();
     let request_body_access = plugins.request_body_access(plugin_name);
     let response_body_access = plugins.response_body_access(plugin_name);
-
-    let request_body = match collect_plugin_request_body(body, request_body_access).await {
-        Ok(body) => body,
-        Err(error) => return json_error(StatusCode::BAD_GATEWAY, error),
-    };
-
     let request_source = source.unwrap_or("explicit");
-    let initial_request = build_plugin_request_context(
-        request_source,
-        &method,
-        &original,
-        request_headers,
-        request_body.bytes(),
-    );
 
-    let request_plan = match plugins
-        .resolve_request(
-            plugin_name,
-            PluginRequestStageContext::new(initial_request.clone()),
-        )
-        .await
-    {
-        Ok(request_plan) => request_plan,
-        Err(error) => {
-            return json_error(
-                StatusCode::BAD_GATEWAY,
-                format!("plugin resolution failed: {error}"),
-            );
-        }
-    };
-
-    let prepared = match prepare_plugin_request(
-        method,
-        request_headers,
-        request_body,
-        initial_request,
-        request_plan,
-    ) {
-        Ok(prepared) => prepared,
-        Err(error) => return json_error(StatusCode::BAD_GATEWAY, error),
-    };
-
-    if let PluginResolvedOutcome::Reject(reject) = &prepared.outcome {
-        tracing::info!(
-            plugin = %plugin_name,
-            original_url = %original,
-            reject_status = reject.status,
-            reject_message = %reject.message,
-            "Plugin rejected request"
-        );
-        return reject_response(reject.status, &reject.message);
-    }
-
-    let (upstream, response_source) =
-        resolve_plugin_upstream(&prepared.outcome, &prepared.context, source);
-
-    tracing::info!(
-        plugin = %plugin_name,
+    let plugin_span = tracing::info_span!(
+        "plugin.forward",
+        plugin = plugin_name,
+        source = request_source,
         original_url = %original,
-        upstream_url = %upstream.url,
-        "Plugin resolved request to upstream"
+        request_body_access,
+        response_body_access,
+        outcome = field::Empty,
+        upstream_url = field::Empty,
+        upstream_status = field::Empty
     );
 
-    let executed = match state
-        .executor
-        .execute(
-            prepared.method,
-            &prepared.headers,
-            original.as_str(),
-            &upstream,
-            prepared.body.into_body(),
-        )
-        .await
-    {
-        Ok(executed) => executed,
-        Err(error) => {
-            return json_error(
-                StatusCode::BAD_GATEWAY,
-                format!("plugin upstream request failed: {error}"),
-            );
-        }
-    };
-
-    if response_body_access {
-        let buffered = match collect_upstream_response(executed.response).await {
-            Ok(buffered) => buffered,
+    async {
+        let request_body = match collect_plugin_request_body(body, request_body_access)
+            .instrument(tracing::info_span!(
+                "plugin.request_body.collect",
+                plugin = plugin_name,
+                buffered = request_body_access
+            ))
+            .await
+        {
+            Ok(body) => body,
             Err(error) => return json_error(StatusCode::BAD_GATEWAY, error),
         };
 
+        let initial_request = build_plugin_request_context(
+            request_source,
+            &method,
+            &original,
+            request_headers,
+            request_body.bytes(),
+        );
+
+        let request_plan = match plugins
+            .resolve_request(
+                plugin_name,
+                PluginRequestStageContext::new(initial_request.clone()),
+            )
+            .instrument(tracing::info_span!(
+                "plugin.request_stage",
+                plugin = plugin_name
+            ))
+            .await
+        {
+            Ok(request_plan) => request_plan,
+            Err(error) => {
+                return json_error(
+                    StatusCode::BAD_GATEWAY,
+                    format!("plugin resolution failed: {error}"),
+                );
+            }
+        };
+
+        let prepared = match prepare_plugin_request(
+            method,
+            request_headers,
+            request_body,
+            initial_request,
+            request_plan,
+        ) {
+            Ok(prepared) => prepared,
+            Err(error) => return json_error(StatusCode::BAD_GATEWAY, error),
+        };
+
+        let outcome_name = plugin_outcome_name(&prepared.outcome);
+        Span::current().record("outcome", outcome_name);
+        request_span.record("action", outcome_name);
+
+        if let PluginResolvedOutcome::Reject(reject) = &prepared.outcome {
+            tracing::info!(
+                plugin = %plugin_name,
+                original_url = %original,
+                reject_status = reject.status,
+                reject_message = %reject.message,
+                "Plugin rejected request"
+            );
+            return reject_response(reject.status, &reject.message);
+        }
+
+        let (upstream, response_source) =
+            resolve_plugin_upstream(&prepared.outcome, &prepared.context, source);
+
+        Span::current().record("upstream_url", field::display(upstream.url.as_str()));
+        request_span.record("upstream_url", field::display(upstream.url.as_str()));
+        tracing::info!(
+            plugin = %plugin_name,
+            original_url = %original,
+            upstream_url = %upstream.url,
+            "Plugin resolved request to upstream"
+        );
+
+        let executed = match state
+            .executor
+            .execute(
+                prepared.method,
+                &prepared.headers,
+                original.as_str(),
+                &upstream,
+                prepared.body.into_body(),
+            )
+            .await
+        {
+            Ok(executed) => executed,
+            Err(error) => {
+                return json_error(
+                    StatusCode::BAD_GATEWAY,
+                    format!("plugin upstream request failed: {error}"),
+                );
+            }
+        };
+
+        if response_body_access {
+            let buffered = match collect_upstream_response(executed.response)
+                .instrument(tracing::info_span!(
+                    "plugin.response_body.collect",
+                    plugin = plugin_name,
+                    buffered = true
+                ))
+                .await
+            {
+                Ok(buffered) => buffered,
+                Err(error) => return json_error(StatusCode::BAD_GATEWAY, error),
+            };
+
+            Span::current().record("upstream_status", buffered.status.as_u16());
+            let response_plan = run_plugin_response_stage(
+                plugins.as_ref(),
+                plugin_name,
+                prepared.context,
+                prepared.matched,
+                &prepared.outcome,
+                buffered.status,
+                &buffered.headers,
+                Some(&buffered.body),
+            )
+            .instrument(tracing::info_span!(
+                "plugin.response_stage",
+                plugin = plugin_name,
+                buffered_body = true,
+                upstream_status = buffered.status.as_u16()
+            ))
+            .await;
+
+            return finalize_buffered_plugin_response(
+                buffered,
+                response_plan,
+                response_source,
+                upstream.url.as_str(),
+            );
+        }
+
+        let response_status = executed.response.status();
+        let response_headers = executed.response.headers().clone();
+        Span::current().record("upstream_status", response_status.as_u16());
         let response_plan = run_plugin_response_stage(
             plugins.as_ref(),
             plugin_name,
             prepared.context,
             prepared.matched,
             &prepared.outcome,
-            buffered.status,
-            &buffered.headers,
-            Some(&buffered.body),
+            response_status,
+            &response_headers,
+            None,
         )
+        .instrument(tracing::info_span!(
+            "plugin.response_stage",
+            plugin = plugin_name,
+            buffered_body = false,
+            upstream_status = response_status.as_u16()
+        ))
         .await;
 
-        return finalize_buffered_plugin_response(
-            buffered,
+        finalize_streaming_plugin_response(
+            executed.response,
             response_plan,
             response_source,
             upstream.url.as_str(),
-        );
+        )
     }
-
-    let response_status = executed.response.status();
-    let response_headers = executed.response.headers().clone();
-    let response_plan = run_plugin_response_stage(
-        plugins.as_ref(),
-        plugin_name,
-        prepared.context,
-        prepared.matched,
-        &prepared.outcome,
-        response_status,
-        &response_headers,
-        None,
-    )
-    .await;
-
-    finalize_streaming_plugin_response(
-        executed.response,
-        response_plan,
-        response_source,
-        upstream.url.as_str(),
-    )
+    .instrument(plugin_span)
+    .await
 }
 
 fn build_plugin_headers(headers: &HeaderMap) -> Vec<PluginHeaderInput> {
@@ -561,4 +617,12 @@ fn apply_header_patches(
     }
 
     Ok(())
+}
+
+fn plugin_outcome_name(outcome: &PluginResolvedOutcome) -> &'static str {
+    match outcome {
+        PluginResolvedOutcome::Direct => "plugin-direct",
+        PluginResolvedOutcome::Mirror(_) => "plugin-mirror",
+        PluginResolvedOutcome::Reject(_) => "plugin-reject",
+    }
 }

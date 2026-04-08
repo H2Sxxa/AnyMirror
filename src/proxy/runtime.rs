@@ -17,7 +17,7 @@ use crate::watch::{ConfigReloadRequest, spawn_config_watch};
 use crate::workers::{ShutdownJoinHandle, Workers};
 
 use super::{
-    executor::HyperExecutor,
+    executors::HyperExecutor,
     handlers::{proxy_entry::proxy_entry, transparent::transparent_entry},
     responses::shutdown_signal,
     router::build_common_router,

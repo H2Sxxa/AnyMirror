@@ -1,4 +1,4 @@
-use super::executor::UpstreamExecutor;
+use super::executors::UpstreamExecutor;
 use crate::plugins::LivePluginRegistry;
 use crate::rules::pool::LiveRuleSet;
 

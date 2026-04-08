@@ -1,7 +1,7 @@
 use axum::{body::Body, extract::State, http::Request, response::Response};
 
 use super::super::{
-    executor::UpstreamExecutor, request_parser::parse_absolute_url, state::AppState,
+    executors::UpstreamExecutor, request_parser::parse_absolute_url, state::AppState,
 };
 use super::common::forward_explicit_request;
 

@@ -6,7 +6,7 @@ use axum::{
 };
 
 use super::super::{
-    executor::UpstreamExecutor,
+    executors::UpstreamExecutor,
     request_parser::parse_request_url,
     responses::{RewriteQuery, RewriteResponse, json_error, rule_action_name, rule_kind_name},
     state::AppState,

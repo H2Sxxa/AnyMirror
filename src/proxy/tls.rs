@@ -4,6 +4,7 @@ use hyper::{body::Incoming, service::service_fn};
 use hyper_util::{
     rt::{TokioExecutor, TokioIo},
     server::conn::auto::Builder,
+    server::graceful::GracefulShutdown,
 };
 use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair, KeyUsagePurpose};
 use rustls::crypto::ring::sign::any_supported_type;
@@ -148,11 +149,16 @@ pub async fn serve_app_tls_with_listener(
     );
 
     // Hyper 1.x / axum 0.8 style pure TCP loop
+    let graceful = GracefulShutdown::new();
+    let server = Builder::new(TokioExecutor::new());
     let mut connection_tasks: JoinSet<()> = JoinSet::new();
     loop {
         let accept_result = tokio::select! {
             _ = &mut shutdown => {
-                tracing::info!("TLS interception server stopping; waiting for active connections");
+                tracing::info!(
+                    active_connections = graceful.count(),
+                    "TLS interception server stopping; draining active connections"
+                );
                 break;
             }
             maybe_finished = connection_tasks.join_next(), if !connection_tasks.is_empty() => {
@@ -177,6 +183,8 @@ pub async fn serve_app_tls_with_listener(
 
         let acceptor = acceptor.clone();
         let app = app.clone();
+        let server = server.clone();
+        let watcher = graceful.watcher();
 
         connection_tasks.spawn(async move {
             let tls_stream = match acceptor.accept(tcp).await {
@@ -191,16 +199,18 @@ pub async fn serve_app_tls_with_listener(
 
             let io = TokioIo::new(tls_stream);
             let hyper_service = service_fn(move |req: Request<Incoming>| app.clone().call(req));
+            let conn = server.serve_connection(io, hyper_service).into_owned();
+            let conn = watcher.watch(conn);
 
-            if let Err(err) = Builder::new(TokioExecutor::new())
-                .serve_connection(io, hyper_service)
-                .await
-            {
+            if let Err(err) = conn.await {
                 // Disconnecting abruptly happens
                 tracing::debug!("Error serving TLS connection: {:?}", err);
             }
         });
     }
+
+    graceful.shutdown().await;
+    tracing::info!("TLS interception server finished draining active connections");
 
     while let Some(result) = connection_tasks.join_next().await {
         if let Err(error) = result {
