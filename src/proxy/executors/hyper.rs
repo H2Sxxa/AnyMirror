@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
 use axum::body::Body;
-use axum::http::{HeaderMap, Method, Request, Uri, header::HOST};
+use axum::http::{HeaderMap, Method, Request, Uri, Version};
 use hyper::rt::{Read, ReadBufCursor, Write};
 use hyper_util::client::legacy::{
     Client,
@@ -35,6 +35,7 @@ type DnsResultCache = Arc<Mutex<HashMap<DnsLookupKey, CachedDnsLookup>>>;
 const POOLED_HTTP1_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 const POOLED_HTTP1_MAX_IDLE_PER_HOST: usize = 8;
 const DNS_RESULT_CACHE_TTL: Duration = Duration::from_secs(10);
+const POOLED_HTTP_ALPN_PROTOCOLS: &[&[u8]] = &[b"h2", b"http/1.1"];
 
 #[derive(Clone)]
 pub(crate) struct HyperExecutor {
@@ -54,12 +55,12 @@ struct PooledTransportConnector {
 
 struct PooledConnection {
     inner: TokioIo<PooledUpstreamStream>,
+    negotiated_h2: bool,
 }
 
 struct PreparedExecution {
     scheme: String,
     path_and_query: String,
-    host_header: String,
     transport: TransportIdentity,
 }
 
@@ -70,7 +71,7 @@ enum PooledUpstreamStream {
 
 #[derive(Clone, Copy)]
 enum UpstreamExecutionMode {
-    PooledHttp1,
+    PooledHttp,
     // Reserved for future transport-specific tuning once pooled HTTP/2 usage is validated.
 }
 
@@ -110,7 +111,8 @@ struct CachedDnsLookup {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct TransportIdentity {
     scheme: TransportScheme,
-    authority_host: String,
+    connect_host: String,
+    request_authority: String,
     port: u16,
     host_header: String,
     sni: Option<String>,
@@ -144,7 +146,7 @@ impl HyperExecutor {
 impl UpstreamExecutionMode {
     fn label(self) -> &'static str {
         match self {
-            Self::PooledHttp1 => "pooled-h1",
+            Self::PooledHttp => "pooled-http",
         }
     }
 }
@@ -166,7 +168,7 @@ impl UpstreamExecutor for HyperExecutor {
         let original_url = original_url.to_string();
         let upstream = upstream.clone();
         let method_name = method.to_string();
-        let execution_mode = UpstreamExecutionMode::PooledHttp1;
+        let execution_mode = UpstreamExecutionMode::PooledHttp;
 
         let execute_span = tracing::info_span!(
             "upstream.execute",
@@ -181,13 +183,14 @@ impl UpstreamExecutor for HyperExecutor {
             sni = field::Empty,
             target_ip = field::Empty,
             target_port = field::Empty,
+            response_http_version = field::Empty,
             response_status = field::Empty
         );
 
         Box::pin(
             async move {
                 let prepared = prepare_execution(&upstream)?;
-                let response = execute_with_pooled_http1(
+                let response = execute_with_pooled_http(
                     pooled_http1_clients,
                     tls_config,
                     resolver_cache,
@@ -201,6 +204,10 @@ impl UpstreamExecutor for HyperExecutor {
                 )
                 .await?;
 
+                Span::current().record(
+                    "response_http_version",
+                    http_version_label(response.version()),
+                );
                 Span::current().record("response_status", response.status().as_u16());
                 Ok(ExecutedUpstream { response })
             }
@@ -229,8 +236,10 @@ impl tower::Service<Uri> for PooledTransportConnector {
                 "upstream.connect",
                 scheme = field::Empty,
                 connect_host = field::Empty,
+                request_authority = field::Empty,
                 sni = field::Empty,
                 dns_cache_hit = field::Empty,
+                negotiated_protocol = field::Empty,
                 target_ip = field::Empty,
                 target_port = field::Empty
             );
@@ -239,7 +248,8 @@ impl tower::Service<Uri> for PooledTransportConnector {
                 validate_pooled_request_uri(&dst, &transport)?;
 
                 Span::current().record("scheme", transport.scheme.label());
-                Span::current().record("connect_host", transport.authority_host.as_str());
+                Span::current().record("connect_host", transport.connect_host.as_str());
+                Span::current().record("request_authority", transport.request_authority.as_str());
                 Span::current().record("target_port", transport.port);
 
                 let target_ip = resolve_connection_ip_for_transport(
@@ -259,21 +269,40 @@ impl tower::Service<Uri> for PooledTransportConnector {
                     let sni = transport
                         .sni
                         .clone()
-                        .unwrap_or_else(|| transport.authority_host.clone());
+                        .unwrap_or_else(|| transport.connect_host.clone());
                     Span::current().record("sni", sni.as_str());
                     let domain = rustls_pki_types::ServerName::try_from(sni)
                         .map_err(|error| anyhow!("invalid TLS server name: {}", error))?;
                     let connector = TlsConnector::from(tls_config);
-                    let tls_stream = async move { connector.connect(domain, tcp).await }
-                        .instrument(tracing::info_span!(
-                            "tls.handshake",
-                            peer = %target_addr
-                        ))
-                        .await?;
-                    return Ok(PooledConnection::new(PooledUpstreamStream::Tls(tls_stream)));
+                    let tls_stream = async move {
+                        connector
+                            .with_alpn(
+                                POOLED_HTTP_ALPN_PROTOCOLS
+                                    .iter()
+                                    .map(|protocol| protocol.to_vec())
+                                    .collect(),
+                            )
+                            .connect(domain, tcp)
+                            .await
+                    }
+                    .instrument(tracing::info_span!(
+                        "tls.handshake",
+                        peer = %target_addr
+                    ))
+                    .await?;
+                    let negotiated_h2 = negotiated_h2(&tls_stream);
+                    Span::current().record(
+                        "negotiated_protocol",
+                        if negotiated_h2 { "h2" } else { "http/1.1" },
+                    );
+                    return Ok(PooledConnection::new(
+                        PooledUpstreamStream::Tls(tls_stream),
+                        negotiated_h2,
+                    ));
                 }
 
-                Ok(PooledConnection::new(PooledUpstreamStream::Tcp(tcp)))
+                Span::current().record("negotiated_protocol", "http/1.1");
+                Ok(PooledConnection::new(PooledUpstreamStream::Tcp(tcp), false))
             }
             .instrument(connect_span)
             .await
@@ -282,16 +311,21 @@ impl tower::Service<Uri> for PooledTransportConnector {
 }
 
 impl PooledConnection {
-    fn new(stream: PooledUpstreamStream) -> Self {
+    fn new(stream: PooledUpstreamStream, negotiated_h2: bool) -> Self {
         Self {
             inner: TokioIo::new(stream),
+            negotiated_h2,
         }
     }
 }
 
 impl Connection for PooledConnection {
     fn connected(&self) -> Connected {
-        Connected::new()
+        if self.negotiated_h2 {
+            Connected::new().negotiated_h2()
+        } else {
+            Connected::new()
+        }
     }
 }
 
@@ -420,10 +454,11 @@ fn build_pooled_http1_client(
         resolver_cache,
         dns_result_cache,
     };
-    let pool_timer = TokioTimer::new();
+    let timer = TokioTimer::new();
     let mut builder = Client::builder(TokioExecutor::new());
     builder
-        .pool_timer(pool_timer)
+        .timer(timer.clone())
+        .pool_timer(timer)
         .pool_idle_timeout(POOLED_HTTP1_IDLE_TIMEOUT)
         .pool_max_idle_per_host(POOLED_HTTP1_MAX_IDLE_PER_HOST)
         .set_host(false);
@@ -465,13 +500,14 @@ fn get_or_create_pooled_http1_client(
 }
 
 fn build_transport_identity(upstream: &UpstreamPlan) -> Result<TransportIdentity> {
-    let authority_host = upstream
+    let connect_host = upstream
         .connect_host
         .as_deref()
         .or_else(|| upstream.url.host_str())
         .ok_or_else(|| anyhow!("No host in target URL"))?
         .to_string();
     let host_header = build_host_header(upstream)?;
+    let request_authority = build_request_authority(upstream)?;
     let port = upstream
         .url
         .port_or_known_default()
@@ -489,7 +525,8 @@ fn build_transport_identity(upstream: &UpstreamPlan) -> Result<TransportIdentity
 
     Ok(TransportIdentity {
         scheme,
-        authority_host,
+        connect_host,
+        request_authority,
         port,
         host_header,
         sni: upstream.sni.clone(),
@@ -562,12 +599,11 @@ fn prepare_execution(upstream: &UpstreamPlan) -> Result<PreparedExecution> {
     Ok(PreparedExecution {
         scheme,
         path_and_query: build_path_and_query(upstream),
-        host_header: build_host_header(upstream)?,
         transport: build_transport_identity(upstream)?,
     })
 }
 
-async fn execute_with_pooled_http1(
+async fn execute_with_pooled_http(
     pooled_http1_clients: Arc<Mutex<HashMap<TransportIdentity, PooledHttp1Client>>>,
     tls_config: Arc<rustls::ClientConfig>,
     resolver_cache: ResolverCache,
@@ -590,7 +626,6 @@ async fn execute_with_pooled_http1(
     let request = build_request(
         method,
         absolute_uri.to_string(),
-        &prepared.host_header,
         headers,
         original_url,
         upstream,
@@ -615,18 +650,17 @@ fn build_path_and_query(upstream: &UpstreamPlan) -> String {
 }
 
 fn build_pooled_request_uri(transport: &TransportIdentity, upstream: &UpstreamPlan) -> Result<Uri> {
-    let authority = normalize_authority(transport.authority_host.as_str(), Some(transport.port));
     let path_and_query = build_path_and_query(upstream);
 
     Uri::builder()
         .scheme(transport.scheme.label())
-        .authority(authority.as_str())
+        .authority(transport.request_authority.as_str())
         .path_and_query(path_and_query.as_str())
         .build()
         .map_err(|error| {
             anyhow!(
-                "failed to build pooled upstream uri for transport host `{}` and target `{}`: {}",
-                transport.authority_host,
+                "failed to build pooled upstream uri for request authority `{}` and target `{}`: {}",
+                transport.request_authority,
                 upstream.url,
                 error
             )
@@ -637,28 +671,16 @@ fn validate_pooled_request_uri(dst: &Uri, transport: &TransportIdentity) -> Resu
     let scheme = dst
         .scheme_str()
         .ok_or_else(|| anyhow!("pooled upstream uri `{}` is missing scheme", dst))?;
-    let host = dst
-        .host()
-        .ok_or_else(|| anyhow!("pooled upstream uri `{}` is missing host", dst))?;
-    let port = dst
-        .port_u16()
-        .or_else(|| match scheme {
-            "http" => Some(80),
-            "https" => Some(443),
-            _ => None,
-        })
-        .ok_or_else(|| anyhow!("pooled upstream uri `{}` has unknown port", dst))?;
+    let authority = dst
+        .authority()
+        .ok_or_else(|| anyhow!("pooled upstream uri `{}` is missing authority", dst))?;
 
-    if scheme != transport.scheme.label()
-        || host != transport.authority_host
-        || port != transport.port
-    {
+    if scheme != transport.scheme.label() || authority.as_str() != transport.request_authority {
         return Err(anyhow!(
-            "pooled upstream uri `{}` does not match transport identity `{}`://{}:{}",
+            "pooled upstream uri `{}` does not match request authority `{}`://{}",
             dst,
             transport.scheme.label(),
-            transport.authority_host,
-            transport.port
+            transport.request_authority
         ));
     }
 
@@ -677,10 +699,21 @@ fn build_host_header(upstream: &UpstreamPlan) -> Result<String> {
         .ok_or_else(|| anyhow!("No host in target URL"))
 }
 
+fn build_request_authority(upstream: &UpstreamPlan) -> Result<String> {
+    if let Some(host) = upstream.host.as_deref() {
+        return Ok(host.to_string());
+    }
+
+    let host = upstream
+        .url
+        .host_str()
+        .ok_or_else(|| anyhow!("No host in target URL"))?;
+    Ok(normalize_authority(host, upstream.url.port()))
+}
+
 fn build_request(
     method: Method,
     request_uri: String,
-    host_header: &str,
     inbound_headers: &HeaderMap,
     original_url: &str,
     upstream: &UpstreamPlan,
@@ -690,13 +723,6 @@ fn build_request(
     let request_headers = request
         .headers_mut()
         .ok_or_else(|| anyhow!("request builder did not provide mutable headers"))?;
-
-    request_headers.insert(
-        HOST,
-        host_header
-            .parse()
-            .map_err(|error| anyhow!("invalid Host header value `{}`: {}", host_header, error))?,
-    );
 
     for (name, value) in inbound_headers {
         if is_forwardable_header(name) {
@@ -728,7 +754,7 @@ async fn resolve_connection_ip_for_transport(
     let connect_span = Span::current();
     let resolve_span = tracing::info_span!(
         "upstream.resolve_address",
-        connect_host = %transport.authority_host,
+        connect_host = %transport.connect_host,
         dns_mode = field::Empty,
         dns_server = field::Empty,
         dns_cache_hit = field::Empty,
@@ -745,8 +771,7 @@ async fn resolve_connection_ip_for_transport(
 
         let resolver_identity = build_resolver_identity(transport)
             .ok_or_else(|| anyhow!("resolver identity missing for non connect-ip transport"))?;
-        let lookup_key =
-            build_dns_lookup_key(&resolver_identity, transport.authority_host.as_str());
+        let lookup_key = build_dns_lookup_key(&resolver_identity, transport.connect_host.as_str());
 
         if let Some(cached_ip) = get_cached_dns_result(dns_result_cache, &lookup_key)? {
             record_resolver_identity(&resolver_identity);
@@ -759,10 +784,10 @@ async fn resolve_connection_ip_for_transport(
         let resolver = get_or_create_resolver(&resolver_identity, resolver_cache).await?;
 
         let ip = resolver
-            .resolve(transport.authority_host.as_str())
+            .resolve(transport.connect_host.as_str())
             .instrument(tracing::info_span!(
                 "dns.lookup",
-                hostname = %transport.authority_host
+                hostname = %transport.connect_host
             ))
             .await?;
         cache_dns_result(dns_result_cache, lookup_key, ip)?;
@@ -907,5 +932,20 @@ fn normalize_authority(host: &str, port: Option<u16>) -> String {
             Some(port) => format!("{}:{}", host, port),
             None => host.to_string(),
         }
+    }
+}
+
+fn negotiated_h2(tls_stream: &UpstreamTlsStream) -> bool {
+    matches!(tls_stream.get_ref().1.alpn_protocol(), Some(protocol) if protocol == b"h2")
+}
+
+fn http_version_label(version: Version) -> &'static str {
+    match version {
+        Version::HTTP_09 => "0.9",
+        Version::HTTP_10 => "1.0",
+        Version::HTTP_11 => "1.1",
+        Version::HTTP_2 => "2",
+        Version::HTTP_3 => "3",
+        _ => "unknown",
     }
 }
