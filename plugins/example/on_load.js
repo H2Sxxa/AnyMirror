@@ -12,10 +12,13 @@
  */
 export function on_event(context) {
   const config = context.input.plugin.config || {};
+  const originHosts = Array.isArray(config.origin_hosts)
+    ? [...new Set(config.origin_hosts.filter(Boolean).map((host) => String(host).toLowerCase()))]
+    : [];
 
   return {
     state: {
-      host: config.host || "example.com",
+      origin_hosts: originHosts,
       mirror_url: config.mirror_url || "https://mirror.example.com/",
       control_header: (config.control_header || "x-anymirror-example").toLowerCase(),
       response_header: (config.response_header || "x-anymirror-example").toLowerCase()

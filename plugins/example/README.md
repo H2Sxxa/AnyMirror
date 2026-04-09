@@ -6,8 +6,8 @@ mirror with hosts that are reachable from your current network environment.
 It demonstrates:
 
 - `on_load`: read plugin config
-- `on_compile`: compile one default `mirror` rule
-- `on_request`: switch the compiled action with a request header
+- `on_compile`: compile plugin runtime metadata from config/state
+- `on_request`: provide default `mirror` behavior and switch it with a request header
 - `on_response`: add visible response headers
 
 It does **not** request body permissions, so it stays on the lightweight plugin path.
@@ -23,26 +23,27 @@ plugins:
   workers: 4
   includes:
     - name: example
+      match:
+        hosts:
+          - example.com
+          - www.example.com
       config:
-        host: example.com
+        origin_hosts:
+          - example.com
+          - www.example.com
         mirror_url: https://mirror.example.com/
         control_header: x-anymirror-example
         response_header: x-anymirror-example
-
-includes:
-  - match:
-      host: example.com
-    action:
-      type: plugin
-      name: example
 ```
 
 ## Behavior
 
-The compiled default action is:
+The default behavior is:
 
-- match `host = example.com`
-- action `mirror -> https://mirror.example.com/`
+- the outer `action: plugin` rule decides which requests invoke the plugin
+- `plugins.includes[].match`, when present, auto-registers an implicit `action: plugin` ingress rule
+- `origin_hosts`, when configured, becomes a simple internal `hosts` matcher for the example plugin
+- `on_request` mirrors to the configured base URL while preserving the original request path and query unless overridden
 
 At request time, `on_request` checks the `x-anymirror-example` header:
 
@@ -64,8 +65,8 @@ Start AnyMirror in explicit mode:
 anymirror --mode explicit --config config.yml
 ```
 
-Before running the commands below, change `host` and `mirror_url` in the plugin config to a plain
-HTTP origin and a reachable mirror URL in your own environment.
+Before running the commands below, change the outer plugin rule and `mirror_url` to a plain HTTP
+origin and a reachable mirror URL in your own environment.
 
 Mirror:
 

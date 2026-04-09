@@ -306,8 +306,13 @@ impl PluginRegistry {
             })?;
 
             let state = execute_load_stage(runtime.clone(), definition, &stage_sources).await?;
-            let program =
-                execute_compile_stage(runtime.clone(), definition, &stage_sources, &state).await?;
+            let program = execute_compile_stage(
+                runtime.clone(),
+                definition,
+                &stage_sources,
+                &state,
+            )
+            .await?;
             let compiled_rules = extract_compiled_rules(&program).with_context(|| {
                 format!(
                     "failed to compile program rules for plugin `{}`",

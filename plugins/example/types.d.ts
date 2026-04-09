@@ -1,20 +1,22 @@
 /// <reference path="../types/plugin.d.ts" />
 
 type ExampleConfig = {
-  host?: string;
+  origin_hosts?: string[];
   mirror_url?: string;
   control_header?: string;
   response_header?: string;
 };
 
 type ExampleState = {
-  host: string;
+  origin_hosts: string[];
   mirror_url: string;
   control_header: string;
   response_header: string;
 };
 
 type ExampleProgram = {
+  origin_hosts: string[];
+  mirror_url: string;
   control_header: string;
   response_header: string;
   rules: PluginCompiledRule[];

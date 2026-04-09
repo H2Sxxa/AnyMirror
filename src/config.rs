@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fs,
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -10,7 +11,7 @@ use ipnet::{Ipv4Net, Ipv6Net};
 use serde::{Deserialize, Serialize};
 
 use crate::rules::pool::RuleSet;
-use crate::rules::schema::RuleSchema;
+use crate::rules::schema::{RuleActionSchema, RuleMatcherSchema, RuleSchema};
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -265,6 +266,8 @@ struct RawPluginDefinition {
     enabled: bool,
     #[serde(default)]
     root: Option<String>,
+    #[serde(rename = "match", default)]
+    matcher: Option<RuleMatcherSchema>,
     #[serde(default)]
     permissions: RawPluginPermissions,
     #[serde(default)]
@@ -307,7 +310,12 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<AppConfig> {
         .listen
         .parse()
         .with_context(|| format!("invalid listen address `{}`", parsed.listen))?;
-    let rules = RuleSet::try_from(parsed.includes)?;
+    let config_dir = source_path.parent().unwrap_or_else(|| Path::new("."));
+    let (plugins, implicit_plugin_rules) =
+        PluginRuntimeOptions::from_raw(parsed.plugins, config_dir)?;
+    let mut rule_schemas = parsed.includes;
+    rule_schemas.extend(implicit_plugin_rules);
+    let rules = RuleSet::try_from(rule_schemas)?;
 
     if rules.is_empty() {
         bail!("config does not contain any include rules");
@@ -318,10 +326,7 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<AppConfig> {
         tls_port: parsed.tls_port,
         backend: BackendOptions::try_from(parsed.backend)?,
         telemetry: TelemetryOptions::try_from(parsed.telemetry)?,
-        plugins: PluginRuntimeOptions::from_raw(
-            parsed.plugins,
-            source_path.parent().unwrap_or_else(|| Path::new(".")),
-        )?,
+        plugins,
         rules,
     })
 }
@@ -479,22 +484,37 @@ impl TryFrom<RawTunBackendOptions> for TunBackendOptions {
 }
 
 impl PluginRuntimeOptions {
-    fn from_raw(value: RawPluginRuntimeOptions, base_dir: &Path) -> Result<Self> {
+    fn from_raw(value: RawPluginRuntimeOptions, base_dir: &Path) -> Result<(Self, Vec<RuleSchema>)> {
         if value.workers == 0 {
             bail!("plugins.workers must be greater than zero");
         }
 
-        let definitions = value
-            .includes
-            .into_iter()
-            .map(|definition| PluginDefinition::from_raw(definition, base_dir))
-            .collect::<Result<Vec<_>>>()?;
+        let mut names = HashSet::new();
+        let mut definitions = Vec::with_capacity(value.includes.len());
+        let mut implicit_rules = Vec::new();
 
-        Ok(Self {
-            enabled: value.enabled,
-            workers: value.workers,
-            definitions,
-        })
+        for definition in value.includes {
+            let parsed = ParsedPluginDefinition::from_raw(definition, base_dir)?;
+            if !names.insert(parsed.definition.name.clone()) {
+                bail!(
+                    "plugins.includes contains duplicate plugin name `{}`; plugin names must be unique",
+                    parsed.definition.name
+                );
+            }
+            if let Some(rule) = parsed.implicit_rule {
+                implicit_rules.push(rule);
+            }
+            definitions.push(parsed.definition);
+        }
+
+        Ok((
+            Self {
+                enabled: value.enabled,
+                workers: value.workers,
+                definitions,
+            },
+            implicit_rules,
+        ))
     }
 }
 
@@ -517,26 +537,46 @@ impl TryFrom<RawTelemetryOptions> for TelemetryOptions {
     }
 }
 
-impl PluginDefinition {
+struct ParsedPluginDefinition {
+    definition: PluginDefinition,
+    implicit_rule: Option<RuleSchema>,
+}
+
+impl ParsedPluginDefinition {
     fn from_raw(value: RawPluginDefinition, base_dir: &Path) -> Result<Self> {
         if value.name.trim().is_empty() {
             bail!("plugins.includes[].name must not be empty");
         }
-        let root_value = value.root.unwrap_or_else(|| value.name.clone());
+        let plugin_name = value.name;
+        let root_value = value.root.unwrap_or_else(|| plugin_name.clone());
         if root_value.trim().is_empty() {
-            bail!("plugin `{}` must define a non-empty root path", value.name);
+            bail!("plugin `{}` must define a non-empty root path", plugin_name);
         }
 
         let root = resolve_plugin_root(base_dir, &root_value);
-
-        Ok(Self {
-            name: value.name,
+        let implicit_rule = if value.enabled {
+            value.matcher.map(|matcher| RuleSchema {
+                matcher,
+                action: RuleActionSchema::Plugin {
+                    name: plugin_name.clone(),
+                },
+            })
+        } else {
+            None
+        };
+        let definition = PluginDefinition {
+            name: plugin_name,
             engine: parse_plugin_engine(&value.engine)?,
             enabled: value.enabled,
             root,
             permissions: PluginPermissions::from_raw(value.permissions),
             config: serde_json::to_value(value.config)
                 .context("failed to serialize plugin config into JSON value")?,
+        };
+
+        Ok(Self {
+            definition,
+            implicit_rule,
         })
     }
 }
