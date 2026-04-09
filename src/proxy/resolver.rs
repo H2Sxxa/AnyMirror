@@ -19,7 +19,7 @@ use crate::rules::model::{DnsMode, DnsPlan};
 ///
 /// It provides unified DNS resolution support for the entire project,
 /// and is integrated into the custom hyper HTTP connector.
-#[allow(dead_code)]
+#[derive(Clone)]
 pub struct CustomResolver {
     resolver: TokioResolver,
 }

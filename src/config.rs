@@ -484,7 +484,10 @@ impl TryFrom<RawTunBackendOptions> for TunBackendOptions {
 }
 
 impl PluginRuntimeOptions {
-    fn from_raw(value: RawPluginRuntimeOptions, base_dir: &Path) -> Result<(Self, Vec<RuleSchema>)> {
+    fn from_raw(
+        value: RawPluginRuntimeOptions,
+        base_dir: &Path,
+    ) -> Result<(Self, Vec<RuleSchema>)> {
         if value.workers == 0 {
             bail!("plugins.workers must be greater than zero");
         }
