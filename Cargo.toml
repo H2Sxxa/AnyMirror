@@ -2,6 +2,7 @@
 name = "anymirror"
 version = "0.4.0"
 edition = "2024"
+description = "High-performance traffic orchestration gateway with transparent L3 proxying and rule-based request routing"
 
 [dependencies]
 anyhow = "1.0"

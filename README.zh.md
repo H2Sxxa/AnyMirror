@@ -3,7 +3,7 @@
 [![Codacy Badge](https://app.codacy.com/project/badge/Grade/39c473845ade4c4c9e9e130eee3b3406)](https://app.codacy.com/gh/H2Sxxa/AnyMirror/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/H2Sxxa/AnyMirror)
 
-AnyMirror 是一款用 Rust 编写的透明 L3 代理与 URL 重定向工具，可以在网络层截获出站流量，并把命中的请求转发到镜像或策略目标。在常见 DNS 环境下，这通常不需要做按应用逐个配置的代理设置。
+AnyMirror 是一个用 Rust 编写的高性能流量编排网关。它以透明 L3 代理的方式在 IP 层截获出站网络流量，并把命中的请求交给镜像、直连、拒绝或插件策略处理。在常见 DNS 环境下，这通常不需要做按应用逐个配置的代理设置。
 
 ## 原理概述
 

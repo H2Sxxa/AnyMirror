@@ -3,7 +3,7 @@
 [![Codacy Badge](https://app.codacy.com/project/badge/Grade/39c473845ade4c4c9e9e130eee3b3406)](https://app.codacy.com/gh/H2Sxxa/AnyMirror/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/H2Sxxa/AnyMirror)
 
-AnyMirror is a transparent L3 proxy and URL redirection tool written in Rust. It intercepts outbound network traffic at the IP layer and redirects selected requests to mirror or policy destinations. In common DNS setups this works without per-application proxy configuration.
+AnyMirror is a high-performance traffic orchestration gateway written in Rust. It operates as a transparent L3 proxy that intercepts outbound network traffic at the IP layer and routes matched requests through mirror, direct, reject, or plugin-driven policies. In common DNS setups this works without per-application proxy configuration.
 
 ## Overview
 
