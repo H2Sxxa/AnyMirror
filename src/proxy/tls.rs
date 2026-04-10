@@ -8,8 +8,9 @@ use hyper_util::{
 };
 use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair, KeyUsagePurpose};
 use rustls::crypto::ring::sign::any_supported_type;
+use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
+use std::collections::HashMap;
 use std::sync::Mutex;
-use std::{collections::HashMap, io::Cursor};
 use std::{fs, path::Path, sync::Arc};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -72,15 +73,12 @@ impl DynamicCertResolver {
         let key_pem = leaf_key.serialize_pem();
 
         let full_chain_pem = format!("{}\n{}", leaf_cert_pem, self.ca_cert_pem);
-        let mut cert_reader = Cursor::new(full_chain_pem.as_bytes());
-        let certs: Vec<_> = rustls_pemfile::certs(&mut cert_reader)
-            .collect::<Result<Vec<_>, _>>()
+        let certs = CertificateDer::pem_slice_iter(full_chain_pem.as_bytes())
+            .collect::<std::result::Result<Vec<_>, _>>()
             .context("failed to parse generated cert")?;
 
-        let mut key_reader = Cursor::new(key_pem.as_bytes());
-        let private_key = rustls_pemfile::private_key(&mut key_reader)
-            .context("failed to read private key")?
-            .context("no private key found")?;
+        let private_key = PrivateKeyDer::from_pem_slice(key_pem.as_bytes())
+            .context("failed to read private key")?;
 
         // Use any_supported_type to handle all key types generically
         let signing_key =
