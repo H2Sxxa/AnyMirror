@@ -12,6 +12,8 @@ pub struct Rule {
     pub kind: RuleKind,
     pub matcher: RuleMatcher,
     pub action: RuleAction,
+    pub priority: RulePriority,
+    pub spread: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -123,6 +125,27 @@ pub enum RuleKind {
     HostSuffix,
     Ip,
     IpCidr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RulePriority(i32);
+
+impl RulePriority {
+    pub const XLOW: Self = Self(-200);
+    pub const LOW: Self = Self(-100);
+    pub const MEDIUM: Self = Self(0);
+    pub const HIGH: Self = Self(100);
+    pub const XHIGH: Self = Self(200);
+
+    pub fn from_value(value: i32) -> Self {
+        Self(value)
+    }
+}
+
+impl Default for RulePriority {
+    fn default() -> Self {
+        Self::MEDIUM
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]

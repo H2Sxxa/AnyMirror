@@ -362,7 +362,10 @@ includes:
 
 - `match.ip` 和 `match.ip_cidr` 只匹配 URL host 本身就是 IP 字面量的请求，例如 `https://203.0.113.10/file`
 - 规则匹配阶段不会额外把域名解析成真实 IP 再去匹配
-- 规则顺序仍然有效。如果多个规则都命中，始终以配置文件里最靠前的规则为准
+- `priority` 是可选字段。它既支持 `xhigh`、`high`、`medium`、`low`、`xlow` 这几个语义级别，也支持数字做更细粒度控制；默认值是 `medium`
+- 内建语义级别对应的数值分别是：`xhigh = 200`、`high = 100`、`medium = 0`、`low = -100`、`xlow = -200`
+- 规则会先按 `priority` 从高到低求值；同一个优先级内，仍然以配置里最靠前的命中规则为准
+- `spread: true` 表示当前优先级的赢家可以继续向更低优先级传播；如果后面的低优先级规则没有覆盖它，这条 spread 规则仍然会生效
 
 结构化动作：
 
@@ -426,7 +429,9 @@ FakeDnsServer -> Intercept Backend -> Local Proxy -> Mirror/Direct upstream
 - 核心的透明 fake-ip 主链已经实现并可用。
 - `backend.kind: windivert` 是当前的主要透明后端，已经支持 Windows 下的 `Network` 和 `NetworkForward`。
 - `backend.kind: tun` + `backend.tun.stack: smoltcp` 已可用，但仍属于实验性后端。
-- 结构化规则、运行时热重载、upstream DNS 控制，以及 QuickJS 插件运行时都已经进入当前 runtime。
+- 显式模式现在已经支持 HTTP 代理，以及 `CONNECT` 之后的 HTTPS 拦截。
+- 结构化规则、运行时热重载、upstream DNS 控制、内建 `respond` 动作，以及 QuickJS 插件运行时都已经进入当前 runtime。
+- 可观测子系统已经通过 `GET /state` 和 `GET /events` 暴露进程内运行时快照与最近事件。
 
 ## 开发计划
 
@@ -435,14 +440,13 @@ FakeDnsServer -> Intercept Backend -> Local Proxy -> Mirror/Direct upstream
 
 ### 近期
 
-- 可配置的可观测内核，支持进程内指标、最近事件和运行时状态快照
-- 内部可观测 HTTP API，用于暴露 metrics、events、workers 和 reload/runtime 状态
-- 流量监控和统计
+- 进程内 metrics 与流量统计
+- 更完整的内部可观测 HTTP API，用于暴露 metrics、worker 状态，以及更丰富的 reload/runtime 状态
 - 支持规则组，提供共享匹配范围、行为修饰器和标签
 - 更强的结构化匹配（`method`、更丰富的 path/query 约束、可选通配 host 规则）
 - 内置规则预设与规则集组合
 - 插件文件监视与仅插件级的自动重载触发
-- 用于静态或模板化 mock 返回，以及 mock 延迟模拟的规则行为配置
+- 用于延迟模拟和更强 `respond` 模板能力的规则行为配置
 - 面向 API 联调的官方 OpenAPI / Swagger 插件工作流
 
 ### 中期

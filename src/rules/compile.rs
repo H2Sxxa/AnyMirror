@@ -20,8 +20,8 @@ use super::model::{
 };
 use super::pool::RuleSet;
 use super::schema::{
-    DnsPlanSchema, RespondBodySchema, RuleActionSchema, RuleMatcherSchema, RuleSchema,
-    UpstreamPlanSchema,
+    DnsPlanSchema, RespondBodySchema, RuleActionSchema, RuleMatcherSchema, RulePrioritySchema,
+    RuleSchema, UpstreamPlanSchema,
 };
 
 impl TryFrom<Vec<RuleSchema>> for RuleSet {
@@ -40,14 +40,24 @@ impl TryFrom<RuleSchema> for Rule {
     type Error = anyhow::Error;
 
     fn try_from(value: RuleSchema) -> Result<Self> {
-        let matcher = RuleMatcher::try_from(value.matcher)?;
-        let action = RuleAction::try_from(value.action)?;
+        let RuleSchema {
+            matcher,
+            priority,
+            spread,
+            action,
+        } = value;
+        let matcher = RuleMatcher::try_from(matcher)?;
+        let action = RuleAction::try_from(action)?;
         Rule::validate_matcher_action(&matcher, &action)?;
 
         Ok(Self {
             kind: matcher.kind(),
             matcher,
             action,
+            priority: priority
+                .map(RulePrioritySchema::into_priority)
+                .unwrap_or_default(),
+            spread: spread.unwrap_or(false),
         })
     }
 }

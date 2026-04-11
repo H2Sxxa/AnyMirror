@@ -368,7 +368,10 @@ Notes:
 
 - `match.ip` and `match.ip_cidr` only match requests whose URL host is already a literal IP such as `https://203.0.113.10/file`.
 - They do not resolve domain names to real IPs during rule matching.
-- Rule order still matters. When multiple rules match, the earliest rule in the config wins.
+- `priority` is optional. It accepts semantic levels `xhigh`, `high`, `medium`, `low`, `xlow`, or a numeric value for finer control. The default is `medium`.
+- The built-in semantic mapping is `xhigh = 200`, `high = 100`, `medium = 0`, `low = -100`, `xlow = -200`.
+- Rules are evaluated by descending `priority` first. Inside the same priority, the earliest matching rule in the config wins.
+- `spread: true` allows the winner of one priority level to keep propagating to lower-priority levels. If no lower-priority rule overrides it, that spread rule still applies.
 
 Structured actions:
 
@@ -433,7 +436,9 @@ When the observability subsystem is enabled, the same listener also exposes:
 - The core transparent fake-ip pipeline is implemented and usable today.
 - `backend.kind: windivert` is the primary transparent backend today, with `Network` and `NetworkForward` support on Windows.
 - `backend.kind: tun` + `backend.tun.stack: smoltcp` is available as an experimental backend.
-- Structured rules, hot reload, upstream DNS controls, and the QuickJS plugin runtime are already part of the current runtime.
+- Explicit mode now supports HTTP proxying and HTTPS interception after `CONNECT`.
+- Structured rules, hot reload, upstream DNS controls, built-in `respond` actions, and the QuickJS plugin runtime are already part of the current runtime.
+- The observability subsystem now exposes in-memory runtime snapshots and recent events through `GET /state` and `GET /events`.
 
 ## Roadmap
 
@@ -443,14 +448,13 @@ kept later.
 
 ### Near Term
 
-- Configurable observability core with in-memory metrics, recent events, and runtime state snapshots
-- Internal observability HTTP API for metrics, events, workers, and reload/runtime state
-- Traffic monitoring and statistics
+- In-memory metrics and traffic statistics
+- Richer observability HTTP API for metrics, worker status, and expanded runtime/reload state
 - Rule groups with shared match scope, behaviors, and tags
 - Advanced structured matching (`method`, richer path/query constraints, optional wildcard host rules)
 - Built-in rule presets/import composition
 - Plugin file watch and automatic plugin-only reload triggers
-- Rule behaviors for static or template-driven mock replies and latency simulation
+- Rule behaviors for latency simulation and richer `respond` templating
 - Official OpenAPI / Swagger-driven plugin workflows for API development
 
 ### Mid Term

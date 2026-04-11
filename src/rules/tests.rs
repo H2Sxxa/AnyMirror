@@ -5,7 +5,7 @@ use url::Url;
 
 use crate::rules::model::{
     HostPattern, HostRuleMatcher, RespondBodySource, Rule, RuleAction, RuleActionKind, RuleKind,
-    RuleMatcher, UpstreamPlan,
+    RuleMatcher, RulePriority, UpstreamPlan,
 };
 use crate::rules::pool::RuleSet;
 use crate::rules::schema::RuleSchema;
@@ -25,6 +25,8 @@ fn rewrites_prefix_rule_from_root_path() {
             connect_ip: None,
             dns: None,
         }),
+        priority: RulePriority::MEDIUM,
+        spread: false,
     }]);
 
     let original =
@@ -52,6 +54,8 @@ fn preserves_query_string_for_prefix_rules() {
             connect_ip: None,
             dns: None,
         }),
+        priority: RulePriority::MEDIUM,
+        spread: false,
     };
     let original = Url::parse("https://resources.download.minecraft.net/ab/cd?download=1").unwrap();
 
@@ -80,6 +84,8 @@ fn exact_rule_requires_full_url_match() {
             connect_ip: None,
             dns: None,
         }),
+        priority: RulePriority::MEDIUM,
+        spread: false,
     };
     let unmatched =
         Url::parse("https://launchermeta.mojang.com/mc/game/version_manifest.json?v=2").unwrap();
@@ -131,6 +137,8 @@ fn structured_host_suffix_rule_matches_dns_hosts() {
             connect_ip: None,
             dns: None,
         }),
+        priority: RulePriority::MEDIUM,
+        spread: false,
     }]);
 
     assert!(rules.matches_dns_host("api.example.com"));
@@ -363,4 +371,145 @@ action:
 
     assert!(rules.resolve(&matched).is_some());
     assert!(rules.resolve(&unmatched).is_none());
+}
+
+#[test]
+fn higher_priority_rule_overrides_lower_priority_rule() {
+    let rule_schema: Vec<RuleSchema> = serde_yaml::from_str(
+        r#"
+- match:
+    host: api.example.com
+  action:
+    type: direct
+- match:
+    host: api.example.com
+  priority: xhigh
+  action:
+    type: reject
+    status: 451
+    message: high priority
+"#,
+    )
+    .unwrap();
+    let rules = RuleSet::try_from(rule_schema).unwrap();
+    let original = Url::parse("https://api.example.com/ping").unwrap();
+
+    let resolved = rules.resolve(&original).unwrap();
+
+    assert_eq!(resolved.action_kind(), RuleActionKind::Reject);
+    assert_eq!(resolved.reject().unwrap().message, "high priority");
+}
+
+#[test]
+fn non_spread_high_priority_rule_blocks_lower_priority_rules() {
+    let rule_schema: Vec<RuleSchema> = serde_yaml::from_str(
+        r#"
+- match:
+    host: api.example.com
+  priority: xhigh
+  action:
+    type: direct
+- match:
+    host: api.example.com
+  priority: low
+  action:
+    type: reject
+    status: 451
+    message: lower priority
+"#,
+    )
+    .unwrap();
+    let rules = RuleSet::try_from(rule_schema).unwrap();
+    let original = Url::parse("https://api.example.com/ping").unwrap();
+
+    let resolved = rules.resolve(&original).unwrap();
+
+    assert_eq!(resolved.action_kind(), RuleActionKind::Direct);
+}
+
+#[test]
+fn spread_high_priority_rule_allows_lower_priority_override() {
+    let rule_schema: Vec<RuleSchema> = serde_yaml::from_str(
+        r#"
+- match:
+    host: api.example.com
+  priority: xhigh
+  spread: true
+  action:
+    type: direct
+- match:
+    host: api.example.com
+  priority: low
+  action:
+    type: reject
+    status: 451
+    message: lower priority
+"#,
+    )
+    .unwrap();
+    let rules = RuleSet::try_from(rule_schema).unwrap();
+    let original = Url::parse("https://api.example.com/ping").unwrap();
+
+    let resolved = rules.resolve(&original).unwrap();
+
+    assert_eq!(resolved.action_kind(), RuleActionKind::Reject);
+    assert_eq!(resolved.reject().unwrap().message, "lower priority");
+}
+
+#[test]
+fn spread_rule_remains_effective_when_no_lower_priority_rule_matches() {
+    let rule_schema: Vec<RuleSchema> = serde_yaml::from_str(
+        r#"
+- match:
+    host: api.example.com
+  priority: xhigh
+  spread: true
+  action:
+    type: respond
+    status: 204
+- match:
+    host: other.example.com
+  priority: low
+  action:
+    type: reject
+    status: 451
+    message: lower priority
+"#,
+    )
+    .unwrap();
+    let rules = RuleSet::try_from(rule_schema).unwrap();
+    let original = Url::parse("https://api.example.com/ping").unwrap();
+
+    let resolved = rules.resolve(&original).unwrap();
+
+    assert_eq!(resolved.action_kind(), RuleActionKind::Respond);
+    assert_eq!(resolved.respond().unwrap().status, 204);
+}
+
+#[test]
+fn numeric_priority_values_are_supported() {
+    let rule_schema: Vec<RuleSchema> = serde_yaml::from_str(
+        r#"
+- match:
+    host: api.example.com
+  priority: -10
+  action:
+    type: direct
+- match:
+    host: api.example.com
+  priority: 250
+  action:
+    type: reject
+    status: 451
+    message: numeric priority
+"#,
+    )
+    .unwrap();
+    let rules = RuleSet::try_from(rule_schema).unwrap();
+    let original = Url::parse("https://api.example.com/ping").unwrap();
+
+    let resolved = rules.resolve(&original).unwrap();
+
+    assert_eq!(resolved.action_kind(), RuleActionKind::Reject);
+    assert_eq!(resolved.reject().unwrap().message, "numeric priority");
 }

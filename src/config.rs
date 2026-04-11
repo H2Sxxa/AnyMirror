@@ -590,6 +590,8 @@ impl ParsedPluginDefinition {
         let implicit_rule = if value.enabled {
             value.matcher.map(|matcher| RuleSchema {
                 matcher,
+                priority: None,
+                spread: None,
                 action: RuleActionSchema::Plugin {
                     name: plugin_name.clone(),
                 },

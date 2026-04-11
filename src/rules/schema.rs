@@ -2,13 +2,53 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use crate::rules::model::DnsMode;
+use crate::rules::model::{DnsMode, RulePriority};
 
 #[derive(Debug, Deserialize)]
 pub struct RuleSchema {
     #[serde(rename = "match")]
     pub matcher: RuleMatcherSchema,
+    pub priority: Option<RulePrioritySchema>,
+    pub spread: Option<bool>,
     pub action: RuleActionSchema,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(untagged)]
+pub enum RulePrioritySchema {
+    Named(NamedRulePriority),
+    Numeric(i32),
+}
+
+impl RulePrioritySchema {
+    pub fn into_priority(self) -> RulePriority {
+        match self {
+            Self::Named(value) => value.into_priority(),
+            Self::Numeric(value) => RulePriority::from_value(value),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NamedRulePriority {
+    XLow,
+    Low,
+    Medium,
+    High,
+    XHigh,
+}
+
+impl NamedRulePriority {
+    fn into_priority(self) -> RulePriority {
+        match self {
+            Self::XLow => RulePriority::XLOW,
+            Self::Low => RulePriority::LOW,
+            Self::Medium => RulePriority::MEDIUM,
+            Self::High => RulePriority::HIGH,
+            Self::XHigh => RulePriority::XHIGH,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

@@ -183,95 +183,53 @@ impl CompiledRuleIndex {
         original: &'url Url,
     ) -> Option<MatchedRule<'rules>> {
         let lookup = LookupContext::from_url(original);
-        let mut best_match = None;
-        let mut best_index = None;
+        let mut candidate_indices = self.collect_candidate_indices(original, &lookup);
+        candidate_indices
+            .sort_unstable_by(|left, right| compare_candidate_order(entries, *left, *right));
+        candidate_indices.dedup();
+
+        resolve_candidates(entries, original, &lookup, &candidate_indices)
+    }
+
+    fn collect_candidate_indices(&self, original: &Url, lookup: &LookupContext<'_>) -> Vec<usize> {
+        let mut candidate_indices = Vec::new();
 
         if let Some(indices) = self.exact_urls.get(&lookup.exact_url_key) {
-            consider_rule_indices(
-                indices,
-                entries,
-                original,
-                &lookup,
-                &mut best_match,
-                &mut best_index,
-            );
+            candidate_indices.extend_from_slice(indices);
         }
 
         if let Some(prefixes) = self.prefix_origins.get(&lookup.origin_key) {
-            prefixes.visit_matches(original.path(), best_index, |index| {
-                consider_rule_index(
-                    index,
-                    entries,
-                    original,
-                    &lookup,
-                    &mut best_match,
-                    &mut best_index,
-                );
+            prefixes.visit_matches(original.path(), None, |index| {
+                candidate_indices.push(index);
             });
         }
 
         if let Some(host) = lookup.normalized_host.as_deref() {
             if let Some(indices) = self.exact_hosts.get(host) {
-                consider_rule_indices(
-                    indices,
-                    entries,
-                    original,
-                    &lookup,
-                    &mut best_match,
-                    &mut best_index,
-                );
+                candidate_indices.extend_from_slice(indices);
             }
 
-            self.suffix_hosts
-                .visit_rule_matches(host, best_index, |index| {
-                    consider_rule_index(
-                        index,
-                        entries,
-                        original,
-                        &lookup,
-                        &mut best_match,
-                        &mut best_index,
-                    );
-                });
+            self.suffix_hosts.visit_rule_matches(host, None, |index| {
+                candidate_indices.push(index);
+            });
         }
 
         if let Some(ip) = lookup.ip {
             if let Some(indices) = self.exact_ips.get(&ip) {
-                consider_rule_indices(
-                    indices,
-                    entries,
-                    original,
-                    &lookup,
-                    &mut best_match,
-                    &mut best_index,
-                );
+                candidate_indices.extend_from_slice(indices);
             }
 
             match ip {
-                IpAddr::V4(ipv4) => self.ipv4_cidr_ips.visit_matches(ipv4, best_index, |index| {
-                    consider_rule_index(
-                        index,
-                        entries,
-                        original,
-                        &lookup,
-                        &mut best_match,
-                        &mut best_index,
-                    );
+                IpAddr::V4(ipv4) => self.ipv4_cidr_ips.visit_matches(ipv4, None, |index| {
+                    candidate_indices.push(index);
                 }),
-                IpAddr::V6(ipv6) => self.ipv6_cidr_ips.visit_matches(ipv6, best_index, |index| {
-                    consider_rule_index(
-                        index,
-                        entries,
-                        original,
-                        &lookup,
-                        &mut best_match,
-                        &mut best_index,
-                    );
+                IpAddr::V6(ipv6) => self.ipv6_cidr_ips.visit_matches(ipv6, None, |index| {
+                    candidate_indices.push(index);
                 }),
             }
         }
 
-        best_match
+        candidate_indices
     }
 
     pub(super) fn matches_dns_host(&self, host: &str) -> bool {
@@ -315,39 +273,52 @@ fn resolve_mirror_upstream(
     resolved
 }
 
-fn consider_rule_indices<'a>(
-    indices: &[usize],
+fn resolve_candidates<'a>(
     entries: &'a [Rule],
     original: &Url,
     lookup: &LookupContext<'_>,
-    best_match: &mut Option<MatchedRule<'a>>,
-    best_index: &mut Option<usize>,
-) {
-    for index in indices {
-        if best_index.is_some_and(|current_best| *index >= current_best) {
-            break;
+    candidate_indices: &[usize],
+) -> Option<MatchedRule<'a>> {
+    let mut propagated_match: Option<MatchedRule<'a>> = None;
+    let mut active_priority = None;
+    let mut priority_match: Option<MatchedRule<'a>> = None;
+
+    for index in candidate_indices {
+        let rule = &entries[*index];
+        if active_priority != Some(rule.priority) {
+            if let Some(matched) = priority_match.take() {
+                if !matched.rule.spread {
+                    return Some(matched);
+                }
+                propagated_match = Some(matched);
+            }
+            active_priority = Some(rule.priority);
         }
-        consider_rule_index(*index, entries, original, lookup, best_match, best_index);
+
+        if priority_match.is_some() {
+            continue;
+        }
+
+        if let Some(action) = rule.resolve_with_lookup(original, lookup) {
+            priority_match = Some(MatchedRule { action, rule });
+        }
     }
+
+    if let Some(matched) = priority_match {
+        if !matched.rule.spread {
+            return Some(matched);
+        }
+        propagated_match = Some(matched);
+    }
+
+    propagated_match
 }
 
-fn consider_rule_index<'a>(
-    index: usize,
-    entries: &'a [Rule],
-    original: &Url,
-    lookup: &LookupContext<'_>,
-    best_match: &mut Option<MatchedRule<'a>>,
-    best_index: &mut Option<usize>,
-) {
-    if best_index.is_some_and(|current_best| index >= current_best) {
-        return;
-    }
-
-    let rule = &entries[index];
-    if let Some(action) = rule.resolve_with_lookup(original, lookup) {
-        *best_match = Some(MatchedRule { action, rule });
-        *best_index = Some(index);
-    }
+fn compare_candidate_order(entries: &[Rule], left: usize, right: usize) -> std::cmp::Ordering {
+    entries[right]
+        .priority
+        .cmp(&entries[left].priority)
+        .then_with(|| left.cmp(&right))
 }
 
 fn matches_common_lookup_parts(
