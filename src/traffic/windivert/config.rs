@@ -48,7 +48,6 @@ pub enum WinDivertLayer {
 pub struct WinDivertAssets {
     pub root: PathBuf,
     pub dll_path: PathBuf,
-    pub lib_path: PathBuf,
     pub sys_path: PathBuf,
 }
 
@@ -186,7 +185,6 @@ pub fn discover_assets() -> Result<WinDivertAssets> {
 
     Ok(WinDivertAssets {
         dll_path: require_file(&root, "WinDivert.dll")?,
-        lib_path: require_file(&root, "WinDivert.lib")?,
         sys_path: require_first_existing(&root, &["WinDivert64.sys", "WinDivert32.sys"])?,
         root,
     })

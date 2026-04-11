@@ -826,7 +826,6 @@ mod tests {
     use std::{
         fs,
         path::{Path, PathBuf},
-        time::{SystemTime, UNIX_EPOCH},
     };
 
     use super::{
@@ -891,18 +890,14 @@ mod tests {
 
     #[test]
     fn resolves_respond_body_file_relative_to_config_directory() {
-        let suffix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let base_dir = std::env::temp_dir().join(format!("anymirror-config-{suffix}"));
-        let mock_dir = base_dir.join("mocks");
+        let base_dir = tempfile::tempdir().unwrap();
+        let mock_dir = base_dir.path().join("mocks");
         fs::create_dir_all(&mock_dir).unwrap();
 
         let body_path = mock_dir.join("health.json");
         fs::write(&body_path, r#"{"ok":true}"#).unwrap();
 
-        let config_path = base_dir.join("config.yml");
+        let config_path = base_dir.path().join("config.yml");
         fs::write(
             &config_path,
             r#"

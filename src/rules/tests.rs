@@ -1,6 +1,6 @@
 use axum::http::header::CONTENT_TYPE;
 use std::fs;
-use std::time::{SystemTime, UNIX_EPOCH};
+use tempfile::NamedTempFile;
 use url::Url;
 
 use crate::rules::model::{
@@ -296,11 +296,8 @@ action:
 
 #[test]
 fn respond_action_accepts_body_file() {
-    let suffix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!("anymirror-respond-{suffix}.txt"));
+    let file = NamedTempFile::new().unwrap();
+    let path = file.path().to_path_buf();
     fs::write(&path, "hello file").unwrap();
 
     let yaml = format!(

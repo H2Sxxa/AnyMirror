@@ -31,7 +31,7 @@ This approach stays transparent to applications while avoiding the classic "same
 ### Build Requirements
 
 - Rust toolchain 1.70+
-- WinDivert SDK files available when building transparent mode from source
+- No extra WinDivert SDK files are required by default when building from source; the current vendored setup handles WinDivert linking automatically
 
 ### Runtime Requirements
 
@@ -66,10 +66,9 @@ The transparent proxy mode requires the WinDivert driver. Download and install i
 1. Download WinDivert from the [official releases page](https://reqrypt.org/windivert.html)
 2. Extract the archive.
    - Runtime files: `WinDivert64.sys` (or `WinDivert32.sys`) and `WinDivert.dll`
-   - Build-time file: `WinDivert.lib` if you compile AnyMirror from source
 3. The driver will be loaded automatically when you run anymirror in transparent mode with administrator privileges
 
-**Note:** Keep the runtime files beside the executable. If you build from source, keep `WinDivert.lib` available for linking as well.
+**Note:** Keep the runtime files beside the executable. If you build from source with the current vendored WinDivert setup, you do not need to provide `WinDivert.lib` manually.
 
 **Note:** You can skip this step when using the official Windows release package unless you want to replace the bundled WinDivert runtime files yourself.
 

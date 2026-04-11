@@ -35,6 +35,7 @@ netstack-smoltcp = "0.2"
 opentelemetry = { version = "0.31.0", features = ["trace"] }
 opentelemetry-otlp = { version = "0.31.1", features = ["grpc-tonic", "trace"] }
 opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio"] }
+pin-project-lite = "0.2"
 rcgen = { version = "0.14", features = ["pem", "aws_lc_rs"] }
 rquickjs = { version = "0.11", features = ["loader"] }
 rustls = { version = "0.23", features = ["ring"] }
@@ -62,6 +63,9 @@ windows-legacy = { package = "windows", version = "0.48.0", features = ["Win32_F
 [patch.crates-io]
 c2rust-bitfields = { path = "vendor/c2rust-bitfields" }
 c2rust-bitfields-derive = { path = "vendor/c2rust-bitfields-derive" }
+
+[dev-dependencies]
+tempfile = "3"
 
 # https://github.com/microsoft/edit/blob/main/Cargo.toml
 # We use `opt-level = "s"` as it significantly reduces binary size.

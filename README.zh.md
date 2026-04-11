@@ -31,7 +31,7 @@ AnyMirror 现在采用基于 fake-ip 的透明代理链路：
 ### 构建要求
 
 - Rust 工具链 1.70 或以上
-- 如果要从源码构建透明模式，需要可用的 WinDivert SDK 文件
+- 默认情况下，从源码构建时不需要额外准备 WinDivert SDK 文件；当前 vendored 配置会自动处理 WinDivert 链接
 
 ### 运行要求
 
@@ -66,10 +66,9 @@ AnyMirror 现在采用基于 fake-ip 的透明代理链路：
 1. 从 [官方发布页面](https://reqrypt.org/windivert.html) 下载 WinDivert
 2. 解压文件：
    - 运行时文件：`WinDivert64.sys`（32 位系统使用 `WinDivert32.sys`）和 `WinDivert.dll`
-   - 构建期文件：如果你要从源码编译 AnyMirror，还需要 `WinDivert.lib`
 3. 以管理员权限运行透明代理时，驱动会自动加载
 
-**注意：** 运行时文件需要和可执行文件放在同一目录；如果从源码构建，还要保证 `WinDivert.lib` 可用于链接。
+**注意：** 运行时文件需要和可执行文件放在同一目录；如果使用当前 vendored 的 WinDivert 配置从源码构建，通常不需要手动提供 `WinDivert.lib`。
 
 **注意：** 如果你直接使用官方 Windows release 包，通常可以跳过这一步；只有你想自己替换 WinDivert 运行时文件时才需要手动处理。
 

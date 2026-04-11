@@ -16,6 +16,7 @@ use hyper_util::client::legacy::{
     connect::{Connected, Connection},
 };
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
+use pin_project_lite::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
@@ -53,9 +54,12 @@ struct PooledTransportConnector {
     dns_result_cache: DnsResultCache,
 }
 
-struct PooledConnection {
-    inner: TokioIo<PooledUpstreamStream>,
-    negotiated_h2: bool,
+pin_project! {
+    struct PooledConnection {
+        #[pin]
+        inner: TokioIo<PooledUpstreamStream>,
+        negotiated_h2: bool,
+    }
 }
 
 struct PreparedExecution {
@@ -335,8 +339,7 @@ impl Read for PooledConnection {
         cx: &mut TaskContext<'_>,
         buf: ReadBufCursor<'_>,
     ) -> Poll<Result<(), io::Error>> {
-        // SAFETY: projecting `inner` does not move the pinned connection.
-        unsafe { self.map_unchecked_mut(|connection| &mut connection.inner) }.poll_read(cx, buf)
+        self.project().inner.poll_read(cx, buf)
     }
 }
 
@@ -346,21 +349,18 @@ impl Write for PooledConnection {
         cx: &mut TaskContext<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
-        // SAFETY: projecting `inner` does not move the pinned connection.
-        unsafe { self.map_unchecked_mut(|connection| &mut connection.inner) }.poll_write(cx, buf)
+        self.project().inner.poll_write(cx, buf)
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Result<(), io::Error>> {
-        // SAFETY: projecting `inner` does not move the pinned connection.
-        unsafe { self.map_unchecked_mut(|connection| &mut connection.inner) }.poll_flush(cx)
+        self.project().inner.poll_flush(cx)
     }
 
     fn poll_shutdown(
         self: Pin<&mut Self>,
         cx: &mut TaskContext<'_>,
     ) -> Poll<Result<(), io::Error>> {
-        // SAFETY: projecting `inner` does not move the pinned connection.
-        unsafe { self.map_unchecked_mut(|connection| &mut connection.inner) }.poll_shutdown(cx)
+        self.project().inner.poll_shutdown(cx)
     }
 
     fn is_write_vectored(&self) -> bool {
@@ -372,9 +372,7 @@ impl Write for PooledConnection {
         cx: &mut TaskContext<'_>,
         bufs: &[io::IoSlice<'_>],
     ) -> Poll<Result<usize, io::Error>> {
-        // SAFETY: projecting `inner` does not move the pinned connection.
-        unsafe { self.map_unchecked_mut(|connection| &mut connection.inner) }
-            .poll_write_vectored(cx, bufs)
+        self.project().inner.poll_write_vectored(cx, bufs)
     }
 }
 
