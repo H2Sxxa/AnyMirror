@@ -103,6 +103,10 @@ anymirror --mode transparent --config config.yml --watch-config
 anymirror --mode transparent --config config.yml
 ```
 
+在显式代理模式下，客户端的 HTTP 代理和 HTTPS 代理都应填写 `127.0.0.1:8787`。HTTPS 代
+理流量同样先进入 `listen`，然后在同一个 socket 上切换到 `CONNECT` 拦截，不存在单独
+的显式模式 HTTPS 代理端口。
+
 `--config` 也支持简单 alias。例如 `--config mcdev` 会依次尝试当前目录下的
 `config.mcdev.yaml`、`config.mcdev.yml`、`mcdev.yaml`、`mcdev.yml`。
 
@@ -114,7 +118,7 @@ anymirror --mode transparent --config config.yml
 
 | CLI 模式 | 后端 | 平台 | 说明 |
 | --- | --- | --- | --- |
-| `explicit` | 不需要拦截后端 | 跨平台 | 作为本地 HTTP 代理运行，并在 `CONNECT` 之后拦截 HTTPS 代理流量 |
+| `explicit` | 不需要拦截后端 | 跨平台 | 作为本地 HTTP 代理运行；HTTPS 代理流量同样通过同一个 `listen` 端口进入，并在 `CONNECT` 之后被拦截 |
 | `transparent` | `backend.kind: windivert` | 仅 Windows | 使用 fake-ip DNS 加 WinDivert 拦截 |
 | `transparent` | `backend.kind: tun` + `backend.tun.stack: smoltcp` | 支持 TUN 的桌面平台，当前仍属实验性 | 使用 TUN 设备加基于 smoltcp 的用户态网络栈 |
 
@@ -382,6 +386,9 @@ FakeDnsServer -> Intercept Backend -> Local Proxy -> Mirror/Direct upstream
   - 8787：HTTP 代理监听端口
   - 8788：透明模式使用的本地 TLS 拦截监听端口（默认是 `listen + 1`，也可通过 `tls_port` 指定）
 
+对于显式代理模式，客户端的 HTTP/HTTPS 代理配置都只需要指向 `listen`（例如
+`127.0.0.1:8787`）。`tls_port` 不是显式 HTTPS 代理端口。
+
 ## 当前状态
 
 - 核心的透明 fake-ip 主链已经实现并可用。
@@ -410,6 +417,7 @@ FakeDnsServer -> Intercept Backend -> Local Proxy -> Mirror/Direct upstream
 
 - Web UI，用于流量看板、规则调试和运行时巡检
 - 显式代理模式下的系统代理管理能力
+- 插件事件发射与分发机制
 
 ### 长期
 

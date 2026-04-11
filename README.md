@@ -104,6 +104,10 @@ anymirror --mode transparent --config config.yml --watch-config
 anymirror --mode transparent --config config.yml
 ```
 
+In explicit mode, configure both the client's HTTP proxy and HTTPS proxy as `127.0.0.1:8787`.
+HTTPS proxy traffic also enters through `listen`, then switches to `CONNECT` interception on the
+same socket. There is no separate explicit-mode HTTPS proxy port.
+
 `--config` also supports simple aliases. For example, `--config mcdev` will try
 `config.mcdev.yaml`, `config.mcdev.yml`, `mcdev.yaml`, and `mcdev.yml` in the current directory.
 
@@ -117,7 +121,7 @@ The current runtime supports these combinations:
 
 | CLI mode | Backend | Platform | Notes |
 | --- | --- | --- | --- |
-| `explicit` | No intercept backend required | Cross-platform | Runs as a local HTTP proxy and intercepts HTTPS proxy traffic after `CONNECT` |
+| `explicit` | No intercept backend required | Cross-platform | Runs as a local HTTP proxy; HTTPS proxy traffic also enters through the same `listen` port and is intercepted after `CONNECT` |
 | `transparent` | `backend.kind: windivert` | Windows only | Uses fake-ip DNS plus WinDivert interception |
 | `transparent` | `backend.kind: tun` + `backend.tun.stack: smoltcp` | Experimental desktop platforms with TUN support | Uses a TUN device plus a userspace smoltcp-based netstack |
 
@@ -389,6 +393,9 @@ For plugin lifecycle, request/response action overrides, and response flow, see
   - Port 8787: HTTP proxy listener
   - Port 8788: Local TLS interception listener used by transparent mode (auto-selected as `listen + 1` unless `tls_port` is set)
 
+For explicit mode, clients should only point their HTTP/HTTPS proxy settings at `listen` (for
+example `127.0.0.1:8787`). `tls_port` is not an explicit HTTPS proxy port.
+
 ## Project Status
 
 - The core transparent fake-ip pipeline is implemented and usable today.
@@ -418,6 +425,7 @@ kept later.
 
 - Web UI for traffic dashboard, rule debugging, and runtime inspection
 - System proxy management for explicit mode
+- Plugin event emission and delivery hooks
 
 ### Longer Term
 
