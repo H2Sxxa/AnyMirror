@@ -19,9 +19,12 @@ This approach stays transparent to applications while avoiding the classic "same
 
 ## Typical Use Cases
 
-- Accelerate Minecraft game server downloads by redirecting official resource servers (libraries.minecraft.net, resources.download.minecraft.net) to CDN mirrors
-- Speed up Maven dependency resolution by redirecting maven.minecraftforge.net to BMCLAPI or similar mirrors
-- General URL redirection for network optimization in restricted or slow network environments
+- Accelerate public downloads and dependency fetching by redirecting selected upstreams to mirrors or CDN endpoints
+- Run a local explicit HTTP/HTTPS proxy with rule-driven `mirror`, `direct`, `respond`, `reject`, and plugin actions
+- Apply transparent fake-ip interception on supported platforms without configuring each application individually
+- Return local mock or stub responses for selected endpoints with `respond`, including file-backed payloads
+- Explain rule conflicts and request routing decisions through `/rules/explain`
+- Practical examples include Minecraft asset mirroring, Maven/Forge dependency acceleration, and local API debugging workflows
 
 ## Requirements
 

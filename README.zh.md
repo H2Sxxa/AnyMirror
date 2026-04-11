@@ -19,9 +19,12 @@ AnyMirror 现在采用基于 fake-ip 的透明代理链路：
 
 ## 典型应用场景
 
-- 通过将 Minecraft 官方资源服务器（libraries.minecraft.net、resources.download.minecraft.net）重定向到 CDN 镜像来加速游戏资源下载
-- 通过将 maven.minecraftforge.net 重定向到 BMCLAPI 等镜像来加速 Maven 依赖解析
-- 在网络受限或速度较慢的环境中进行 URL 重定向优化
+- 通过把指定 upstream 重定向到镜像或 CDN 来加速公开下载和依赖获取
+- 作为本地显式 HTTP/HTTPS 代理使用，并基于规则执行 `mirror`、`direct`、`respond`、`reject` 和插件动作
+- 在支持的平台上以 transparent fake-ip 方式拦截流量，而不需要给每个应用单独配置代理
+- 用 `respond` 为选定接口返回本地 mock / stub 响应，包括基于文件的静态返回
+- 通过 `/rules/explain` 解释规则冲突和请求路由决策
+- 典型例子包括 Minecraft 资源镜像、Maven / Forge 依赖加速，以及本地 API 联调工作流
 
 ## 系统要求
 
