@@ -1,113 +1,196 @@
+use std::collections::HashMap;
+use std::convert::Infallible;
+use std::future::Future;
+use std::sync::Mutex;
+use std::{fs, path::Path, sync::Arc};
+
 use anyhow::{Context, Result, anyhow};
 use axum::{Router, extract::Request, middleware::map_request};
 use hyper::{body::Incoming, service::service_fn};
-use hyper_util::{
-    rt::{TokioExecutor, TokioIo},
-    server::conn::auto::Builder,
-    server::graceful::GracefulShutdown,
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use rcgen::{
+    BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
+    KeyUsagePurpose, PKCS_ECDSA_P256_SHA256, PKCS_RSA_SHA256, RsaKeySize,
 };
-use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair, KeyUsagePurpose};
 use rustls::crypto::ring::sign::any_supported_type;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
-use std::collections::HashMap;
-use std::sync::Mutex;
-use std::{fs, path::Path, sync::Arc};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls::{
-    ServerConfig,
+    ServerConfig, SignatureScheme,
     server::{ClientHello, ResolvesServerCert},
     sign::CertifiedKey,
 };
 use tower::Service;
 
+const SERVER_ALPN_PROTOCOLS: &[&[u8]] = &[b"h2", b"http/1.1"];
+
 #[derive(Clone, Debug)]
 pub struct TlsIntercepted;
 
-/// Dynamic certificate resolver that generates certificates on-the-fly for SNI hostnames
 #[derive(Clone, Debug)]
-struct DynamicCertResolver {
-    ca_cert_pem: String,
-    ca_key_pem: String,
-    /// Cache of generated certificates
-    cache: Arc<Mutex<HashMap<String, Arc<CertifiedKey>>>>,
+pub struct TlsInterceptService {
+    state: Arc<TlsInterceptState>,
 }
 
-impl DynamicCertResolver {
-    fn new(ca_cert_pem: String, ca_key_pem: String) -> Self {
-        Self {
-            ca_cert_pem,
-            ca_key_pem,
-            cache: Arc::new(Mutex::new(HashMap::new())),
-        }
+#[derive(Debug)]
+struct TlsInterceptState {
+    ca_cert_pem: String,
+    ca_key_pem: String,
+    cache: Mutex<HashMap<String, HostCertifiedKeys>>,
+}
+
+#[derive(Debug, Clone)]
+struct HostCertifiedKeys {
+    ecdsa: Arc<CertifiedKey>,
+    rsa: Arc<CertifiedKey>,
+}
+
+#[derive(Clone, Debug)]
+struct DynamicCertResolver {
+    service: TlsInterceptService,
+}
+
+#[derive(Debug)]
+struct FixedCertResolver {
+    service: TlsInterceptService,
+    hostname: String,
+}
+
+impl TlsInterceptService {
+    pub fn new() -> Result<Self> {
+        let (ca_cert_pem, ca_key_pem) = get_or_generate_ca_cert()?;
+        Ok(Self {
+            state: Arc::new(TlsInterceptState {
+                ca_cert_pem,
+                ca_key_pem,
+                cache: Mutex::new(HashMap::new()),
+            }),
+        })
     }
 
-    fn get_or_generate_cert(&self, hostname: &str) -> Result<Arc<CertifiedKey>> {
-        // Check cache first
+    pub fn listener_server_config(&self) -> ServerConfig {
+        let mut config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_cert_resolver(Arc::new(DynamicCertResolver {
+                service: self.clone(),
+            }));
+        config.alpn_protocols = SERVER_ALPN_PROTOCOLS
+            .iter()
+            .map(|protocol| protocol.to_vec())
+            .collect();
+        config
+    }
+
+    pub fn host_server_config(&self, hostname: &str) -> Result<ServerConfig> {
+        let mut config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_cert_resolver(Arc::new(FixedCertResolver {
+                service: self.clone(),
+                hostname: hostname.to_string(),
+            }));
+        config.alpn_protocols = SERVER_ALPN_PROTOCOLS
+            .iter()
+            .map(|protocol| protocol.to_vec())
+            .collect();
+        Ok(config)
+    }
+
+    fn certified_key_for_host(
+        &self,
+        hostname: &str,
+        signature_schemes: &[SignatureScheme],
+    ) -> Result<Arc<CertifiedKey>> {
+        let certified_keys = self.host_certified_keys(hostname)?;
+        let selected_key_algorithm =
+            select_certified_key_algorithm(&certified_keys, signature_schemes);
+        tracing::debug!(
+            hostname,
+            ?signature_schemes,
+            selected_key_algorithm,
+            "Selected TLS interception certificate"
+        );
+        Ok(select_certified_key(&certified_keys, signature_schemes))
+    }
+
+    fn host_certified_keys(&self, hostname: &str) -> Result<HostCertifiedKeys> {
         {
             let cache = self
+                .state
                 .cache
                 .lock()
                 .map_err(|_| anyhow!("certificate cache lock poisoned"))?;
-            if let Some(cert) = cache.get(hostname) {
-                return Ok(cert.clone());
+            if let Some(certified_keys) = cache.get(hostname) {
+                return Ok(certified_keys.clone());
             }
         }
 
-        let ca_key =
-            KeyPair::from_pem(&self.ca_key_pem).context("failed to parse CA private key PEM")?;
+        let ca_key = KeyPair::from_pem(&self.state.ca_key_pem)
+            .context("failed to parse CA private key PEM")?;
         let ca_issuer = Issuer::new(build_ca_params()?, ca_key);
+        let certified_keys = HostCertifiedKeys {
+            ecdsa: Arc::new(build_leaf_certified_key(
+                hostname,
+                &self.state.ca_cert_pem,
+                &ca_issuer,
+                LeafKeyAlgorithm::Ecdsa,
+            )?),
+            rsa: Arc::new(build_leaf_certified_key(
+                hostname,
+                &self.state.ca_cert_pem,
+                &ca_issuer,
+                LeafKeyAlgorithm::Rsa,
+            )?),
+        };
 
-        let mut leaf_params = CertificateParams::new(vec![hostname.to_string()])
-            .context("failed to build leaf cert params")?;
-        leaf_params
-            .distinguished_name
-            .push(DnType::CommonName, hostname);
-        let leaf_key = KeyPair::generate().context("failed to generate leaf key")?;
-        let leaf_cert = leaf_params
-            .signed_by(&leaf_key, &ca_issuer)
-            .context("failed to issue leaf cert with CA")?;
-        let leaf_cert_pem = leaf_cert.pem();
-        let key_pem = leaf_key.serialize_pem();
-
-        let full_chain_pem = format!("{}\n{}", leaf_cert_pem, self.ca_cert_pem);
-        let certs = CertificateDer::pem_slice_iter(full_chain_pem.as_bytes())
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .context("failed to parse generated cert")?;
-
-        let private_key = PrivateKeyDer::from_pem_slice(key_pem.as_bytes())
-            .context("failed to read private key")?;
-
-        // Use any_supported_type to handle all key types generically
-        let signing_key =
-            any_supported_type(&private_key).context("unsupported or invalid private key")?;
-
-        let certified_key = Arc::new(CertifiedKey::new(certs, signing_key));
-
-        // Cache it
         {
             let mut cache = self
+                .state
                 .cache
                 .lock()
                 .map_err(|_| anyhow!("certificate cache lock poisoned"))?;
-            cache.insert(hostname.to_string(), certified_key.clone());
+            cache.insert(hostname.to_string(), certified_keys.clone());
         }
 
-        Ok(certified_key)
+        Ok(certified_keys)
     }
 }
 
 impl ResolvesServerCert for DynamicCertResolver {
     fn resolve(&self, client_hello: ClientHello) -> Option<Arc<CertifiedKey>> {
-        // Extract SNI hostname from client hello
-        let hostname = client_hello.server_name().map(|sni| sni.to_string())?;
+        let hostname = client_hello
+            .server_name()
+            .map(|server_name| server_name.to_string())?;
 
-        match self.get_or_generate_cert(&hostname) {
-            Ok(key) => Some(key),
-            Err(e) => {
-                tracing::warn!("Failed to generate certificate for {}: {}", hostname, e);
+        match self
+            .service
+            .certified_key_for_host(&hostname, client_hello.signature_schemes())
+        {
+            Ok(certified_key) => Some(certified_key),
+            Err(error) => {
+                tracing::warn!("Failed to generate certificate for {}: {}", hostname, error);
+                None
+            }
+        }
+    }
+}
+
+impl ResolvesServerCert for FixedCertResolver {
+    fn resolve(&self, client_hello: ClientHello) -> Option<Arc<CertifiedKey>> {
+        match self
+            .service
+            .certified_key_for_host(&self.hostname, client_hello.signature_schemes())
+        {
+            Ok(certified_key) => Some(certified_key),
+            Err(error) => {
+                tracing::warn!(
+                    "Failed to resolve certificate for {}: {}",
+                    self.hostname,
+                    error
+                );
                 None
             }
         }
@@ -115,29 +198,12 @@ impl ResolvesServerCert for DynamicCertResolver {
 }
 
 pub async fn serve_app_tls_with_listener(
+    service: TlsInterceptService,
     app: Router,
     listener: TcpListener,
     mut shutdown: oneshot::Receiver<()>,
 ) -> Result<()> {
-    // Generate or load CA certificate
-    let (ca_cert_pem, ca_key_pem) = get_or_generate_ca_cert()?;
-
-    // Create dynamic certificate resolver
-    let cert_resolver = DynamicCertResolver::new(ca_cert_pem, ca_key_pem);
-
-    // Create server config with dynamic resolver
-    let config = ServerConfig::builder()
-        .with_no_client_auth()
-        .with_cert_resolver(Arc::new(cert_resolver));
-
-    let acceptor = TlsAcceptor::from(Arc::new(config));
-
-    // We inject TlsIntercepted into the request extensions directly in the router clone here
-    let app = app.layer(map_request(|mut req: Request| async move {
-        req.extensions_mut().insert(TlsIntercepted);
-        req
-    }));
-
+    let app = attach_tls_marker(app);
     let listen_addr = listener
         .local_addr()
         .context("failed to read TLS listen address")?;
@@ -146,10 +212,11 @@ pub async fn serve_app_tls_with_listener(
         listen_addr
     );
 
-    // Hyper 1.x / axum 0.8 style pure TCP loop
-    let graceful = GracefulShutdown::new();
-    let server = Builder::new(TokioExecutor::new());
+    let acceptor = TlsAcceptor::from(Arc::new(service.listener_server_config()));
+    let server = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
+    let graceful = hyper_util::server::graceful::GracefulShutdown::new();
     let mut connection_tasks: JoinSet<()> = JoinSet::new();
+
     loop {
         let accept_result = tokio::select! {
             _ = &mut shutdown => {
@@ -171,8 +238,9 @@ pub async fn serve_app_tls_with_listener(
             }
             result = listener.accept() => result
         };
+
         let (tcp, _remote_addr) = match accept_result {
-            Ok(conn) => conn,
+            Ok(connection) => connection,
             Err(error) => {
                 tracing::error!(?error, "Failed to accept TLS connection");
                 continue;
@@ -186,23 +254,21 @@ pub async fn serve_app_tls_with_listener(
 
         connection_tasks.spawn(async move {
             let tls_stream = match acceptor.accept(tcp).await {
-                Ok(s) => s,
-                Err(e) => {
-                    // This error is perfectly normal (e.g. client cancels, scanner probes)
-                    // You can keep it as debug or trace to not clutter logs
-                    tracing::debug!("TLS handshake failed: {}", e);
+                Ok(stream) => stream,
+                Err(error) => {
+                    tracing::debug!("TLS handshake failed: {}", error);
                     return;
                 }
             };
 
             let io = TokioIo::new(tls_stream);
-            let hyper_service = service_fn(move |req: Request<Incoming>| app.clone().call(req));
-            let conn = server.serve_connection(io, hyper_service).into_owned();
-            let conn = watcher.watch(conn);
+            let hyper_service =
+                service_fn(move |request: Request<Incoming>| app.clone().call(request));
+            let connection = server.serve_connection(io, hyper_service).into_owned();
+            let connection = watcher.watch(connection);
 
-            if let Err(err) = conn.await {
-                // Disconnecting abruptly happens
-                tracing::debug!("Error serving TLS connection: {:?}", err);
+            if let Err(error) = connection.await {
+                tracing::debug!("Error serving TLS connection: {:?}", error);
             }
         });
     }
@@ -219,12 +285,143 @@ pub async fn serve_app_tls_with_listener(
     Ok(())
 }
 
+pub async fn serve_app_tls_stream<S, F, Fut>(
+    service: TlsInterceptService,
+    stream: S,
+    hostname: &str,
+    handler: F,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    F: Fn(Request<Incoming>) -> Fut + Clone + Send + 'static,
+    Fut: Future<Output = Result<axum::response::Response, Infallible>> + Send + 'static,
+{
+    let config = Arc::new(service.host_server_config(hostname)?);
+    let acceptor = TlsAcceptor::from(config);
+    tracing::info!(hostname, "Starting explicit HTTPS interception handshake");
+    let tls_stream = match acceptor.accept(stream).await {
+        Ok(stream) => {
+            tracing::info!(hostname, "Completed explicit HTTPS interception handshake");
+            stream
+        }
+        Err(error) => {
+            tracing::warn!(
+                hostname,
+                error = %error,
+                "Explicit HTTPS interception handshake failed"
+            );
+            return Err(error).with_context(|| {
+                format!("failed to complete TLS interception handshake for `{hostname}`")
+            });
+        }
+    };
+    let server = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
+    let io = TokioIo::new(tls_stream);
+    let hyper_service = service_fn(handler);
+
+    server
+        .serve_connection(io, hyper_service)
+        .await
+        .map_err(|error| anyhow!("failed to serve intercepted TLS stream: {error}"))?;
+
+    Ok(())
+}
+
+fn attach_tls_marker(app: Router) -> Router {
+    app.layer(map_request(|mut request: Request| async move {
+        request.extensions_mut().insert(TlsIntercepted);
+        request
+    }))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LeafKeyAlgorithm {
+    Ecdsa,
+    Rsa,
+}
+
+fn build_leaf_certified_key(
+    hostname: &str,
+    ca_cert_pem: &str,
+    ca_issuer: &Issuer<'_, KeyPair>,
+    algorithm: LeafKeyAlgorithm,
+) -> Result<CertifiedKey> {
+    let mut leaf_params = CertificateParams::new(vec![hostname.to_string()])
+        .context("failed to build leaf cert params")?;
+    leaf_params
+        .distinguished_name
+        .push(DnType::CommonName, hostname);
+    leaf_params.key_usages = vec![
+        KeyUsagePurpose::DigitalSignature,
+        KeyUsagePurpose::KeyEncipherment,
+    ];
+    leaf_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+
+    let leaf_key = match algorithm {
+        LeafKeyAlgorithm::Ecdsa => KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)
+            .context("failed to generate ECDSA leaf key")?,
+        LeafKeyAlgorithm::Rsa => KeyPair::generate_rsa_for(&PKCS_RSA_SHA256, RsaKeySize::_2048)
+            .context("failed to generate RSA leaf key")?,
+    };
+    let leaf_cert = leaf_params
+        .signed_by(&leaf_key, ca_issuer)
+        .context("failed to issue leaf cert with CA")?;
+    let leaf_cert_pem = leaf_cert.pem();
+    let key_pem = leaf_key.serialize_pem();
+
+    let full_chain_pem = format!("{leaf_cert_pem}\n{ca_cert_pem}");
+    let certs = CertificateDer::pem_slice_iter(full_chain_pem.as_bytes())
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("failed to parse generated cert")?;
+    let private_key =
+        PrivateKeyDer::from_pem_slice(key_pem.as_bytes()).context("failed to read private key")?;
+    let signing_key =
+        any_supported_type(&private_key).context("unsupported or invalid private key")?;
+
+    Ok(CertifiedKey::new(certs, signing_key))
+}
+
+fn select_certified_key(
+    certified_keys: &HostCertifiedKeys,
+    signature_schemes: &[SignatureScheme],
+) -> Arc<CertifiedKey> {
+    match select_certified_key_algorithm(certified_keys, signature_schemes) {
+        "rsa" => certified_keys.rsa.clone(),
+        "ecdsa" => certified_keys.ecdsa.clone(),
+        _ => certified_keys.rsa.clone(),
+    }
+}
+
+fn select_certified_key_algorithm(
+    certified_keys: &HostCertifiedKeys,
+    signature_schemes: &[SignatureScheme],
+) -> &'static str {
+    if certified_keys
+        .rsa
+        .key
+        .choose_scheme(signature_schemes)
+        .is_some()
+    {
+        return "rsa";
+    }
+
+    if certified_keys
+        .ecdsa
+        .key
+        .choose_scheme(signature_schemes)
+        .is_some()
+    {
+        return "ecdsa";
+    }
+
+    "rsa-fallback"
+}
+
 fn get_or_generate_ca_cert() -> Result<(String, String)> {
     let cert_path = Path::new("anymirror_ca.crt");
     let key_path = Path::new("anymirror_ca.key");
 
     if cert_path.exists() && key_path.exists() {
-        // Load existing CA
         let cert_pem = fs::read_to_string(cert_path).context("failed to read CA cert")?;
         let key_pem = fs::read_to_string(key_path).context("failed to read CA key")?;
 
@@ -232,7 +429,6 @@ fn get_or_generate_ca_cert() -> Result<(String, String)> {
         return Ok((cert_pem, key_pem));
     }
 
-    // Generate new CA certificate
     tracing::info!("Generating new CA certificate for dynamic TLS interception...");
 
     let ca_params = build_ca_params()?;

@@ -24,7 +24,7 @@ use tracing::{Instrument, Span, field};
 
 use crate::rules::model::UpstreamPlan;
 
-use super::super::{headers::is_forwardable_header, resolver::CustomResolver};
+use super::super::{headers::is_end_to_end_header, resolver::CustomResolver};
 use super::{ExecutedUpstream, UpstreamExecutor};
 
 type PooledHttp1Client = Client<PooledTransportConnector, Body>;
@@ -725,7 +725,7 @@ fn build_request(
         .ok_or_else(|| anyhow!("request builder did not provide mutable headers"))?;
 
     for (name, value) in inbound_headers {
-        if is_forwardable_header(name) {
+        if is_end_to_end_header(name) {
             request_headers.insert(name.clone(), value.clone());
         }
     }

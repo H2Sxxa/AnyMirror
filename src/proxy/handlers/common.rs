@@ -6,8 +6,8 @@ use axum::{
 use url::Url;
 
 use super::super::{
-    executors::UpstreamExecutor, forwarding::forward_request,
-    request_parser::ensure_supported_method, responses::json_error, state::AppState,
+    executors::UpstreamExecutor, forwarding::forward_request, responses::json_error,
+    state::AppState,
 };
 
 pub(super) fn reject_connect_request(
@@ -15,10 +15,6 @@ pub(super) fn reject_connect_request(
     message: &'static str,
 ) -> Option<Response> {
     (request.method() == Method::CONNECT).then(|| json_error(StatusCode::NOT_IMPLEMENTED, message))
-}
-
-pub(super) fn ensure_forwardable_method(request: &Request<Body>) -> Result<(), Response> {
-    ensure_supported_method(request.method())
 }
 
 pub(super) async fn forward_standard_request<E: UpstreamExecutor>(
@@ -44,21 +40,12 @@ pub(super) async fn forward_explicit_request<E, P>(
     state: &AppState<E>,
     request: Request<Body>,
     source: &'static str,
-    connect_rejection_message: &'static str,
     parse_original: P,
 ) -> Response
 where
     E: UpstreamExecutor,
     P: FnOnce(&Request<Body>) -> Result<Url, Response>,
 {
-    if let Some(response) = reject_connect_request(&request, connect_rejection_message) {
-        return response;
-    }
-
-    if let Err(response) = ensure_forwardable_method(&request) {
-        return response;
-    }
-
     let original = match parse_original(&request) {
         Ok(url) => url,
         Err(response) => return response,

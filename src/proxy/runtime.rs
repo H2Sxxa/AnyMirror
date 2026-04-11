@@ -22,6 +22,7 @@ use super::{
     responses::shutdown_signal,
     router::build_common_router,
     state::AppState,
+    tls::TlsInterceptService,
 };
 
 pub async fn serve_explicit(
@@ -132,6 +133,7 @@ pub async fn serve_transparent(
         &fake_dns_supervisor,
         &intercept_supervisor,
         app.clone(),
+        state.tls_intercept.clone(),
         &config,
         live_rules,
     )
@@ -189,6 +191,7 @@ pub async fn serve_transparent(
                     &fake_dns_supervisor,
                     &intercept_supervisor,
                     app.clone(),
+                    state.tls_intercept.clone(),
                     &reloaded_config,
                     state.rules.clone(),
                 ).await?;
@@ -204,9 +207,11 @@ fn build_state(
     plugins: LivePluginRegistry,
 ) -> Result<AppState<HyperExecutor>> {
     let executor = HyperExecutor::new()?;
+    let tls_intercept = TlsInterceptService::new()?;
 
     Ok(AppState {
         executor,
+        tls_intercept,
         plugins,
         rules,
     })
@@ -273,6 +278,7 @@ impl TransparentRuntimeHandles {
         fake_dns_supervisor: &FakeDnsSupervisor,
         intercept_supervisor: &InterceptBackendSupervisor,
         app: Router,
+        tls_intercept: TlsInterceptService,
         next_config: &AppConfig,
         live_rules: LiveRuleSet,
     ) -> Result<()> {
@@ -313,8 +319,11 @@ impl TransparentRuntimeHandles {
             if let Some(tls) = self.tls.take() {
                 tls.shutdown().await;
             }
-            self.tls =
-                Some(listener_supervisor.start_tls(app.clone(), effective_tls_port(next_config))?);
+            self.tls = Some(listener_supervisor.start_tls(
+                app.clone(),
+                effective_tls_port(next_config),
+                tls_intercept,
+            )?);
         }
 
         if reload_plan.restart_intercept {
@@ -345,6 +354,7 @@ async fn start_transparent_components(
     fake_dns_supervisor: &FakeDnsSupervisor,
     intercept_supervisor: &InterceptBackendSupervisor,
     app: Router,
+    tls_intercept: TlsInterceptService,
     config: &AppConfig,
     live_rules: LiveRuleSet,
 ) -> Result<TransparentRuntimeHandles> {
@@ -353,7 +363,7 @@ async fn start_transparent_components(
         .start_http(app.clone(), config.listen_addr)
         .await?;
     let tls_port = effective_tls_port(config);
-    let tls = listener_supervisor.start_tls(app, tls_port)?;
+    let tls = listener_supervisor.start_tls(app, tls_port, tls_intercept)?;
     let intercept = intercept_supervisor
         .start(InterceptBackendRuntimeConfig {
             listen_addr: config.listen_addr,

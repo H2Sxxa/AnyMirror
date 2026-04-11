@@ -7,7 +7,7 @@ use super::super::{
     state::AppState,
     tls::TlsIntercepted,
 };
-use super::common::{ensure_forwardable_method, reject_connect_request};
+use super::common::reject_connect_request;
 
 pub(crate) async fn transparent_entry<E: UpstreamExecutor>(
     State(state): State<AppState<E>>,
@@ -17,10 +17,6 @@ pub(crate) async fn transparent_entry<E: UpstreamExecutor>(
         &request,
         "transparent HTTPS interception is not enabled in this build",
     ) {
-        return response;
-    }
-
-    if let Err(response) = ensure_forwardable_method(&request) {
         return response;
     }
 

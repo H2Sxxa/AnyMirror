@@ -101,13 +101,15 @@ Expected:
 - HTTP `451`
 - body contains `rejected by example plugin`
 
-## Explicit Mode Limitation
+## Explicit Mode HTTPS Note
 
-The current explicit proxy build does not support HTTP `CONNECT` tunnels yet.
-That means commands like this will fail for HTTPS targets:
+The explicit proxy build now intercepts HTTPS proxy traffic after HTTP `CONNECT`, so the example
+plugin can inspect and rewrite HTTPS requests too once the AnyMirror CA is trusted.
+
+Commands like this can work for HTTPS validation once the client trusts `anymirror_ca.crt`:
 
 ```bash
-curl -i --proxy http://127.0.0.1:8787 https://your-origin.example/
+curl -i --proxy http://127.0.0.1:8787 --cacert anymirror_ca.crt https://your-origin.example/
 ```
 
-That is why this example uses `http://...` for explicit-mode verification.
+This example still uses `http://...` for the quickest explicit-mode verification flow.

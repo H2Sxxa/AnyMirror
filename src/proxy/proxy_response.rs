@@ -2,7 +2,7 @@ use axum::{body::Body, http::HeaderName, response::Response};
 
 use crate::rules::pool::MatchedRule;
 
-use super::{headers::is_forwardable_header, responses::rule_kind_name};
+use super::{headers::is_end_to_end_header, responses::rule_kind_name};
 
 pub(super) fn build_proxy_response(
     upstream: hyper::Response<hyper::body::Incoming>,
@@ -37,7 +37,7 @@ fn build_upstream_response(
     let response_headers = response.headers_mut().expect("response builder is valid");
 
     for (name, value) in upstream.headers() {
-        if is_forwardable_header(name) {
+        if is_end_to_end_header(name) {
             response_headers.append(name, value.clone());
         }
     }

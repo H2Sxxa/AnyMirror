@@ -44,104 +44,137 @@ pub(crate) async fn forward_request<E: UpstreamExecutor>(
 
     async {
         let rules = state.rules.snapshot();
-        let matched = match rules.resolve(&original) {
-            Some(matched) => matched,
+        let matched = rules.resolve(&original);
+        match matched {
+            Some(matched) => {
+                let action_name = rule_action_name(matched.clone());
+                let rule_kind = rule_kind_name(matched.clone());
+                Span::current().record("rule_matched", true);
+                Span::current().record("rule_kind", rule_kind);
+                Span::current().record("action", action_name);
+                request_span.record("action", action_name);
+
+                let message = rule_action_message(matched.action_kind(), false);
+                if let Some(reject) = matched.reject() {
+                    Span::current().record("response_kind", "reject");
+                    Span::current().record("response_status", reject.status);
+                    tracing::info!(
+                        original_url = %original,
+                        reject_status = reject.status,
+                        reject_message = %reject.message,
+                        "{message}"
+                    );
+                    return reject_response(reject.status, &reject.message);
+                }
+                if let Some(plugin_name) = matched.plugin() {
+                    Span::current().record("plugin", plugin_name);
+                    return plugin::forward_plugin_request(
+                        state,
+                        method,
+                        inbound_headers,
+                        body,
+                        original,
+                        source,
+                        plugin_name,
+                    )
+                    .await;
+                }
+
+                let upstream = matched
+                    .upstream()
+                    .expect("mirror/direct actions must resolve to an upstream");
+                Span::current().record("upstream_url", field::display(upstream.url.as_str()));
+                request_span.record("upstream_url", field::display(upstream.url.as_str()));
+                tracing::info!(original_url = %original, upstream_url = %upstream.url, "{message}");
+                let executed = match state
+                    .executor
+                    .execute(method, inbound_headers, original.as_str(), upstream, body)
+                    .await
+                {
+                    Ok(executed) => executed,
+                    Err(error) => {
+                        return json_error(
+                            StatusCode::BAD_GATEWAY,
+                            format!("request forwarding failed: {error}"),
+                        );
+                    }
+                };
+
+                let response_status = executed.response.status().as_u16();
+                Span::current().record("response_status", response_status);
+
+                match matched.action_kind() {
+                    RuleActionKind::Mirror => {
+                        Span::current().record("response_kind", "mirror");
+                        build_proxy_response(executed.response, matched, source)
+                    }
+                    RuleActionKind::Direct => {
+                        Span::current().record("response_kind", "direct");
+                        build_passthrough_response(executed.response, source, original.as_str())
+                    }
+                    RuleActionKind::Plugin => {
+                        unreachable!("plugin actions resolve before upstream execution")
+                    }
+                    RuleActionKind::Reject => {
+                        unreachable!("reject returns before upstream execution")
+                    }
+                }
+            }
             None => {
+                let upstream = UpstreamPlan::direct(&original);
                 Span::current().record("rule_matched", false);
-                return json_error(StatusCode::NOT_FOUND, "no matching mirror rule");
-            }
-        };
-
-        let action_name = rule_action_name(matched.clone());
-        let rule_kind = rule_kind_name(matched.clone());
-        Span::current().record("rule_matched", true);
-        Span::current().record("rule_kind", rule_kind);
-        Span::current().record("action", action_name);
-        request_span.record("action", action_name);
-
-        let message = rule_action_message(matched.action_kind(), false);
-        if let Some(reject) = matched.reject() {
-            Span::current().record("response_kind", "reject");
-            Span::current().record("response_status", reject.status);
-            tracing::info!(
-                original_url = %original,
-                reject_status = reject.status,
-                reject_message = %reject.message,
-                "{message}"
-            );
-            return reject_response(reject.status, &reject.message);
-        }
-        if let Some(plugin_name) = matched.plugin() {
-            Span::current().record("plugin", plugin_name);
-            return plugin::forward_plugin_request(
-                state,
-                method,
-                inbound_headers,
-                body,
-                original,
-                source,
-                plugin_name,
-            )
-            .await;
-        }
-
-        let upstream = matched
-            .upstream()
-            .expect("mirror/direct actions must resolve to an upstream");
-        Span::current().record("upstream_url", field::display(upstream.url.as_str()));
-        request_span.record("upstream_url", field::display(upstream.url.as_str()));
-        tracing::info!(original_url = %original, upstream_url = %upstream.url, "{message}");
-        let executed = match state
-            .executor
-            .execute(method, inbound_headers, original.as_str(), upstream, body)
-            .await
-        {
-            Ok(executed) => executed,
-            Err(error) => {
-                return json_error(
-                    StatusCode::BAD_GATEWAY,
-                    format!("request forwarding failed: {error}"),
-                );
-            }
-        };
-
-        let response_status = executed.response.status().as_u16();
-        Span::current().record("response_status", response_status);
-
-        match matched.action_kind() {
-            RuleActionKind::Mirror => {
-                Span::current().record("response_kind", "mirror");
-                build_proxy_response(executed.response, matched, source)
-            }
-            RuleActionKind::Direct => {
+                Span::current().record("action", "direct");
+                Span::current().record("upstream_url", field::display(upstream.url.as_str()));
                 Span::current().record("response_kind", "direct");
-                build_passthrough_response(executed.response, source, original.as_str())
+                request_span.record("action", "direct");
+                request_span.record("upstream_url", field::display(upstream.url.as_str()));
+                tracing::info!(
+                    original_url = %original,
+                    "Explicit request does not match a rule; forwarding directly"
+                );
+                let executed = match state
+                    .executor
+                    .execute(method, inbound_headers, original.as_str(), &upstream, body)
+                    .await
+                {
+                    Ok(executed) => executed,
+                    Err(error) => {
+                        return json_error(
+                            StatusCode::BAD_GATEWAY,
+                            format!("direct upstream request failed: {error}"),
+                        );
+                    }
+                };
+
+                Span::current().record("response_status", executed.response.status().as_u16());
+                build_passthrough_response(
+                    executed.response,
+                    source.or(Some("explicit-direct")),
+                    original.as_str(),
+                )
             }
-            RuleActionKind::Plugin => {
-                unreachable!("plugin actions resolve before upstream execution")
-            }
-            RuleActionKind::Reject => unreachable!("reject returns before upstream execution"),
         }
     }
     .instrument(forward_span)
     .await
 }
 
-pub(crate) async fn forward_transparent_request<E: UpstreamExecutor>(
+pub(crate) async fn forward_intercepted_request<E: UpstreamExecutor>(
     state: &AppState<E>,
     method: Method,
     inbound_headers: &HeaderMap,
     body: Body,
     original: Url,
+    source: &'static str,
 ) -> Response {
     let request_span = Span::current();
-    request_span.record("forwarding_source", "transparent");
+    request_span.record("forwarding_source", source);
     request_span.record("original_url", field::display(original.as_str()));
 
     let forward_span = tracing::info_span!(
         "request.forward",
-        mode = "transparent",
-        source = "transparent",
+        mode = source,
+        source = source,
         original_url = %original,
         rule_matched = field::Empty,
         rule_kind = field::Empty,
@@ -184,7 +217,7 @@ pub(crate) async fn forward_transparent_request<E: UpstreamExecutor>(
                         inbound_headers,
                         body,
                         original,
-                        Some("transparent"),
+                        Some(source),
                         plugin_name,
                     )
                     .await;
@@ -216,13 +249,13 @@ pub(crate) async fn forward_transparent_request<E: UpstreamExecutor>(
                 match matched.action_kind() {
                     RuleActionKind::Mirror => {
                         Span::current().record("response_kind", "mirror");
-                        build_proxy_response(executed.response, matched, Some("transparent"))
+                        build_proxy_response(executed.response, matched, Some(source))
                     }
                     RuleActionKind::Direct => {
                         Span::current().record("response_kind", "direct");
                         build_passthrough_response(
                             executed.response,
-                            Some("transparent-direct"),
+                            Some(source),
                             original.as_str(),
                         )
                     }
@@ -244,7 +277,7 @@ pub(crate) async fn forward_transparent_request<E: UpstreamExecutor>(
                 request_span.record("upstream_url", field::display(upstream.url.as_str()));
                 tracing::info!(
                     original_url = %original,
-                    "Transparent request does not match a mirror rule; forwarding directly"
+                    "Intercepted request does not match a rule; forwarding directly"
                 );
                 let executed = match state
                     .executor
@@ -261,15 +294,29 @@ pub(crate) async fn forward_transparent_request<E: UpstreamExecutor>(
                 };
 
                 Span::current().record("response_status", executed.response.status().as_u16());
-                build_passthrough_response(
-                    executed.response,
-                    Some("transparent-direct"),
-                    original.as_str(),
-                )
+                build_passthrough_response(executed.response, Some(source), original.as_str())
             }
         }
     }
     .instrument(forward_span)
+    .await
+}
+
+pub(crate) async fn forward_transparent_request<E: UpstreamExecutor>(
+    state: &AppState<E>,
+    method: Method,
+    inbound_headers: &HeaderMap,
+    body: Body,
+    original: Url,
+) -> Response {
+    forward_intercepted_request(
+        state,
+        method,
+        inbound_headers,
+        body,
+        original,
+        "transparent",
+    )
     .await
 }
 

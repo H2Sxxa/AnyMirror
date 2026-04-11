@@ -626,7 +626,7 @@ fn default_tun_mtu() -> u16 {
 }
 
 fn default_tun_stack() -> String {
-    "system".to_string()
+    "smoltcp".to_string()
 }
 
 fn default_tun_platform_dns() -> String {

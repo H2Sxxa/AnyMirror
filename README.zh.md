@@ -68,12 +68,14 @@ AnyMirror 现在采用基于 fake-ip 的透明代理链路：
 
 ### 3. 信任 TLS 证书
 
-在透明代理模式下，anymirror 拦截 HTTPS 流量并用自签名证书重新加密。为避免安全警告：
+当 AnyMirror 拦截 HTTPS 流量时，会使用自签名 CA 对流量重新加密。这既包括透明模式下的
+HTTPS 拦截，也包括显式代理模式下在 `CONNECT` 之后进入拦截链的 HTTPS 请求。为避免安
+全警告：
 
-1. 第一次运行 anymirror 时，它会在工作目录生成 `anymirror.crt` 和 `anymirror.key`
+1. 第一次运行 anymirror 时，它会在工作目录生成 `anymirror_ca.crt` 和 `anymirror_ca.key`
 2. 将证书安装到系统或应用中：
-   - **Windows 系统信任：** 使用 `certmgr.msc` 或 PowerShell 将 `anymirror.crt` 导入到"受信任的根证书颁发机构"
-   - **Java/Maven：** 用以下命令导入 JVM 密钥库：`keytool -import -alias anymirror -file anymirror.crt -keystore %JAVA_HOME%\lib\security\cacerts`
+   - **Windows 系统信任：** 使用 `certmgr.msc` 或 PowerShell 将 `anymirror_ca.crt` 导入到"受信任的根证书颁发机构"
+   - **Java/Maven：** 用以下命令导入 JVM 密钥库：`keytool -import -alias anymirror -file anymirror_ca.crt -keystore %JAVA_HOME%\lib\security\cacerts`
    - **浏览器：** 将证书导入浏览器的受信任 CA 列表
 
 3. 信任证书后，HTTPS 拦截将不显示安全警告
@@ -112,7 +114,7 @@ anymirror --mode transparent --config config.yml
 
 | CLI 模式 | 后端 | 平台 | 说明 |
 | --- | --- | --- | --- |
-| `explicit` | 不需要拦截后端 | 跨平台 | 作为标准本地 HTTP/HTTPS 代理运行 |
+| `explicit` | 不需要拦截后端 | 跨平台 | 作为本地 HTTP 代理运行，并在 `CONNECT` 之后拦截 HTTPS 代理流量 |
 | `transparent` | `backend.kind: windivert` | 仅 Windows | 使用 fake-ip DNS 加 WinDivert 拦截 |
 | `transparent` | `backend.kind: tun` + `backend.tun.stack: smoltcp` | 支持 TUN 的桌面平台，当前仍属实验性 | 使用 TUN 设备加基于 smoltcp 的用户态网络栈 |
 
@@ -132,7 +134,7 @@ anymirror --mode transparent --config config.yml
 
 ```yaml
 listen: 127.0.0.1:8787
-# tls_port: 8788  # 可选：自定义 HTTPS 代理端口（如不指定，默认为 listen_port + 1）
+# tls_port: 8788  # 可选：自定义透明 HTTPS 拦截监听端口（如不指定，默认为 listen_port + 1）
 backend:
   kind: windivert              # windivert 或 tun
   dns:
@@ -194,7 +196,7 @@ includes:
 ### 配置字段说明
 
 - **listen：** 代理服务绑定的地址和端口（例如 `127.0.0.1:8787`）
-- **tls_port** （可选）：自定义 HTTPS 代理端口。如不指定，默认为 `listen_port + 1`。例如 `listen` 为 `127.0.0.1:8787` 时，HTTPS 端口默认为 `8788`，除非在此指定其他端口。
+- **tls_port** （可选）：透明模式下本地 TLS 拦截监听端口。如不指定，默认为 `listen_port + 1`。例如 `listen` 为 `127.0.0.1:8787` 时，透明 HTTPS 拦截端口默认为 `8788`，除非在此指定其他端口。
 - **backend.kind**：透明拦截后端选择器。如不填写，Windows 默认是 `windivert`，非 Windows 平台默认是 `tun`。`windivert` 是成熟的 Windows 后端；`tun` 是实验性的 TUN 后端入口。
 - **backend.dns.listen**：本地 fake-ip DNS 服务地址。WinDivert 和仍然需要 localhost fake DNS 的场景会用到它；`tun + smoltcp` 当前会在 TUN 内直接回答 DNS，不会启动这个本地 listener runtime。
 - **backend.dns.fake_ipv4_range**：透明重定向使用的 IPv4 fake-ip 地址池。WinDivert 只会拦截目标地址落在这个网段内的 TCP 连接。
@@ -203,7 +205,7 @@ includes:
 - **backend.windivert.layer**：透明模式下 WinDivert 使用的捕获层。`network` 用于本机流量，`network-forward` 用于 WSL、虚拟机或网关场景下的转发流量。
 - **backend.tun.name**：TUN 后端使用的设备名。
 - **backend.tun.mtu**：TUN 后端使用的 MTU。
-- **backend.tun.stack**：TUN 栈选择器。`system` 目前还是 TODO；`smoltcp` 会启用实验性的用户态 TCP/IP 栈后端。
+- **backend.tun.stack**：TUN 栈选择器。当前默认值是 `smoltcp`。`system` 目前还是 TODO；`smoltcp` 会启用实验性的用户态 TCP/IP 栈后端。
 - **backend.tun.platform_dns**：控制 `tun + smoltcp` 的平台 DNS 自动化。`auto` 表示启用平台相关的 DNS 设置；`manual` 表示由用户自己配置。默认值是 Windows 为 `auto`，其他平台为 `manual`。
 - **backend.tun.dns_hijack**：`tun + smoltcp` 的可选 DNS 劫持目标列表。`any:53` 表示劫持发往任意目标的 UDP DNS；`tcp://any:53` 表示劫持发往任意目标的 TCP DNS。即使这个列表为空，保留的 TUN 站内 DNS 地址仍然总会被劫持。
 - **includes：** 结构化 `match + action` 规则列表（见下方规则匹配模式）
@@ -378,37 +380,38 @@ FakeDnsServer -> Intercept Backend -> Local Proxy -> Mirror/Direct upstream
 
 - **端口分配：**
   - 8787：HTTP 代理监听端口
-  - 8788：HTTPS 代理监听端口（自动为 443 端口目标选中）
+  - 8788：透明模式使用的本地 TLS 拦截监听端口（默认是 `listen + 1`，也可通过 `tls_port` 指定）
+
+## 当前状态
+
+- 核心的透明 fake-ip 主链已经实现并可用。
+- `backend.kind: windivert` 是当前的主要透明后端，已经支持 Windows 下的 `Network` 和 `NetworkForward`。
+- `backend.kind: tun` + `backend.tun.stack: smoltcp` 已可用，但仍属于实验性后端。
+- 结构化规则、运行时热重载、upstream DNS 控制，以及 QuickJS 插件运行时都已经进入当前 runtime。
 
 ## 开发计划
 
-- [x] 基于 WinDivert 的拦截后端（`Network` 和 `NetworkForward`）用于 Windows 透明流量捕获
-- [x] 支持 IPv4 与 IPv6 的 Fake-IP DNS 主链
-- [x] DNS UDP 就地响应与 DNS-over-TCP 重定向到本地 fake DNS 服务
-- [x] 共享 NAT，用于透明请求重定向与代理响应还原
-- [x] 基于 Rustls 动态证书的透明 HTTP / HTTPS 拦截
-- [x] 基于 Hyper 的高性能 upstream 执行与完整请求体转发
-- [x] 结构化规则引擎，支持 `exact`、`prefix`、`host`、`hosts`、`host_suffix`、`ip`、`ip_cidr`
-- [x] 结构化规则动作，支持 `mirror`、`direct`、`reject`
-- [x] 可扩展的 upstream 配置（`connect_ip`、`connect_host`、`sni` 与自定义 upstream DNS）
-- [x] CLI 启动参数支持配置 alias fallback（如 `--config mcdev` 自动解析到 `config.mcdev.yml`）
-- [x] 通过 `--watch-config` 实现完整配置监视与运行时热重载
-- [x] 实验性的 `backend.kind: tun` + `backend.tun.stack: smoltcp` 后端，支持站内 DNS 解析
-- [x] 插件运行时，支持 `on_load`、`on_compile`、`on_request`、`on_response` 生命周期
-- [x] 基于 QuickJS 的插件引擎，支持模块导入、worker 池和类型友好的插件编写体验
-- [x] 插件请求/响应编排能力，支持插件规则编译、action override，以及 request/response patch
-- [x] 插件 body 权限控制，支持显式 `on_request.body` / `on_response.body` 开关和轻量无 body 路径
-- [ ] DoH / DoT 等加密 DNS 的拦截支持
-- [ ] 支持规则组，提供共享匹配范围、行为修饰器和标签
-- [ ] 内建 `respond` 等响应动作，用于静态或模板化 mock 返回
-- [ ] 在响应动作中支持内建延迟与延迟模拟能力
-- [ ] 基于 OpenAPI / Swagger 的 mock 动作，用于 API 联调工作流
-- [ ] 可配置的可观测内核，支持进程内指标、最近事件和运行时状态快照
-- [ ] 内部可观测 HTTP API，用于暴露 metrics、events、workers 和 reload/runtime 状态
-- [ ] Web UI，用于流量看板、规则调试和运行时巡检
-- [ ] 显式代理模式下的系统代理管理能力
-- [ ] 更强的结构化匹配（`method`、更丰富的 path/query 约束、可选通配 host 规则）
-- [ ] 内置规则预设与规则集组合
-- [ ] 插件文件监视与仅插件级的自动重载触发
-- [ ] 流量监控和统计
-- [ ] 生产可用的跨平台 TUN/TAP 支持，包括 `system` 栈和平台原生宿主（长期目标）
+接下来更实际的工作重点会放在可调试性、运行时可观测性和规则易用性上。
+像客户端侧 DoH / DoT 拦截这种只影响透明模式、实现复杂度也更高的问题，会明确后置。
+
+### 近期
+
+- 可配置的可观测内核，支持进程内指标、最近事件和运行时状态快照
+- 内部可观测 HTTP API，用于暴露 metrics、events、workers 和 reload/runtime 状态
+- 流量监控和统计
+- 支持规则组，提供共享匹配范围、行为修饰器和标签
+- 更强的结构化匹配（`method`、更丰富的 path/query 约束、可选通配 host 规则）
+- 内置规则预设与规则集组合
+- 插件文件监视与仅插件级的自动重载触发
+- 用于静态或模板化 mock 返回，以及 mock 延迟模拟的规则行为配置
+- 面向 API 联调的官方 OpenAPI / Swagger 插件工作流
+
+### 中期
+
+- Web UI，用于流量看板、规则调试和运行时巡检
+- 显式代理模式下的系统代理管理能力
+
+### 长期
+
+- 生产可用的跨平台 TUN/TAP 支持，包括 `system` 栈和平台原生宿主
+- DoH / DoT 等客户端侧加密 DNS 的透明拦截支持

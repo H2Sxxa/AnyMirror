@@ -4,7 +4,11 @@ use anyhow::Result;
 use axum::{Router, serve};
 use tokio::{net::TcpListener, sync::oneshot};
 
-use crate::{proxy::tls, socket::bind_dual_stack_tcp_listener, workers::Workers};
+use crate::{
+    proxy::tls::{self, TlsInterceptService},
+    socket::bind_dual_stack_tcp_listener,
+    workers::Workers,
+};
 
 use super::ShutdownJoinHandle;
 
@@ -43,14 +47,20 @@ impl ListenerSupervisor {
         ))
     }
 
-    pub fn start_tls(&self, app: Router, port: u16) -> Result<TlsListenerHandle> {
+    pub fn start_tls(
+        &self,
+        app: Router,
+        port: u16,
+        tls_intercept: TlsInterceptService,
+    ) -> Result<TlsListenerHandle> {
         let listener = bind_dual_stack_tcp_listener(port, 1024)?;
         Ok(spawn_shutdownable_listener(
             &self.workers,
             "tls-listener",
             move |shutdown_rx| async move {
                 if let Err(error) =
-                    tls::serve_app_tls_with_listener(app, listener, shutdown_rx).await
+                    tls::serve_app_tls_with_listener(tls_intercept, app, listener, shutdown_rx)
+                        .await
                 {
                     tracing::error!(?error, "TLS listener worker exited unexpectedly");
                 }

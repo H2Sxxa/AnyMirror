@@ -69,12 +69,14 @@ use `wintun.dll`.
 
 ### 3. Trust the TLS Certificate
 
-When running in transparent mode, anymirror intercepts HTTPS traffic and re-encrypts it with a self-signed certificate. To avoid security warnings:
+When AnyMirror intercepts HTTPS traffic, it re-encrypts that traffic with a self-signed
+certificate authority. This applies to transparent HTTPS interception and to explicit-mode HTTPS
+proxy requests that are intercepted after `CONNECT`. To avoid security warnings:
 
-1. Run anymirror for the first time - it will generate `anymirror.crt` and `anymirror.key` in the working directory
+1. Run anymirror for the first time - it will generate `anymirror_ca.crt` and `anymirror_ca.key` in the working directory
 2. Install the certificate in your system/application:
-   - **Windows system trust:** Use `certmgr.msc` or PowerShell to import `anymirror.crt` into the Trusted Root Certification Authorities store
-   - **Java/Maven:** Import to the JVM keystore with: `keytool -import -alias anymirror -file anymirror.crt -keystore %JAVA_HOME%\lib\security\cacerts`
+   - **Windows system trust:** Use `certmgr.msc` or PowerShell to import `anymirror_ca.crt` into the Trusted Root Certification Authorities store
+   - **Java/Maven:** Import to the JVM keystore with: `keytool -import -alias anymirror -file anymirror_ca.crt -keystore %JAVA_HOME%\lib\security\cacerts`
    - **Browser:** Import the certificate into your browser's trusted CA list
 
 3. After trusting the certificate, HTTPS interception will work without warnings
@@ -115,7 +117,7 @@ The current runtime supports these combinations:
 
 | CLI mode | Backend | Platform | Notes |
 | --- | --- | --- | --- |
-| `explicit` | No intercept backend required | Cross-platform | Runs as a standard local HTTP/HTTPS proxy |
+| `explicit` | No intercept backend required | Cross-platform | Runs as a local HTTP proxy and intercepts HTTPS proxy traffic after `CONNECT` |
 | `transparent` | `backend.kind: windivert` | Windows only | Uses fake-ip DNS plus WinDivert interception |
 | `transparent` | `backend.kind: tun` + `backend.tun.stack: smoltcp` | Experimental desktop platforms with TUN support | Uses a TUN device plus a userspace smoltcp-based netstack |
 
@@ -135,7 +137,7 @@ Create a `config.yml` file with your redirection rules:
 
 ```yaml
 listen: 127.0.0.1:8787
-# tls_port: 8788  # Optional: customize HTTPS proxy port (default: listen_port + 1)
+# tls_port: 8788  # Optional: customize the transparent HTTPS interception port (default: listen_port + 1)
 backend:
   kind: windivert              # windivert or tun
   dns:
@@ -197,7 +199,7 @@ includes:
 ### Configuration Fields
 
 - **listen:** Server address and port to bind to (e.g., `127.0.0.1:8787`)
-- **tls_port** (optional): Custom HTTPS proxy port. If not specified, defaults to `listen_port + 1`. For example, if `listen` is `127.0.0.1:8787`, the HTTPS port will be `8788` unless overridden here.
+- **tls_port** (optional): Custom local TLS interception port used by transparent mode. If not specified, it defaults to `listen_port + 1`. For example, if `listen` is `127.0.0.1:8787`, the transparent HTTPS interception port will be `8788` unless overridden here.
 - **backend.kind**: Transparent intercept backend selector. If omitted, it defaults to `windivert` on Windows and `tun` on non-Windows platforms. Use `windivert` for the mature Windows backend, or `tun` for the experimental TUN backend.
 - **backend.dns.listen**: Local fake-ip DNS server address. This is the local fake DNS listener used by WinDivert and by any setup that still wants a localhost fake DNS service. The `tun + smoltcp` backend currently handles DNS in-tunnel and does not start this local listener runtime.
 - **backend.dns.fake_ipv4_range**: IPv4 fake-ip pool used for transparent redirection. WinDivert only intercepts TCP connections whose destination falls inside this range.
@@ -206,7 +208,7 @@ includes:
 - **backend.windivert.layer**: WinDivert capture layer used in transparent mode. Use `network` for local traffic and `network-forward` for forwarded traffic such as WSL, VMs, or gateway scenarios.
 - **backend.tun.name**: TUN device name used by the TUN backend.
 - **backend.tun.mtu**: TUN MTU used by the TUN backend.
-- **backend.tun.stack**: TUN stack selector. `system` is currently TODO. `smoltcp` enables the experimental userspace TCP/IP stack backend.
+- **backend.tun.stack**: TUN stack selector. The current default is `smoltcp`. `system` is currently TODO. `smoltcp` enables the experimental userspace TCP/IP stack backend.
 - **backend.tun.platform_dns**: Controls platform DNS automation for `tun + smoltcp`. `auto` enables platform-specific DNS setup; `manual` leaves DNS configuration to the user. The default is `auto` on Windows and `manual` on other platforms.
 - **backend.tun.dns_hijack**: Optional DNS hijack target list for `tun + smoltcp`. `any:53` hijacks UDP DNS to any destination; `tcp://any:53` hijacks TCP DNS to any destination. Reserved in-tunnel DNS addresses are always hijacked even if this list is empty.
 - **includes:** List of structured `match + action` rules (see Rule Matching Modes below)
@@ -385,37 +387,39 @@ For plugin lifecycle, request/response action overrides, and response flow, see
 
 - **Port allocation:**
   - Port 8787: HTTP proxy listener
-  - Port 8788: HTTPS proxy listener (auto-selected for port 443 destinations)
+  - Port 8788: Local TLS interception listener used by transparent mode (auto-selected as `listen + 1` unless `tls_port` is set)
+
+## Project Status
+
+- The core transparent fake-ip pipeline is implemented and usable today.
+- `backend.kind: windivert` is the primary transparent backend today, with `Network` and `NetworkForward` support on Windows.
+- `backend.kind: tun` + `backend.tun.stack: smoltcp` is available as an experimental backend.
+- Structured rules, hot reload, upstream DNS controls, and the QuickJS plugin runtime are already part of the current runtime.
 
 ## Roadmap
 
-- [x] WinDivert intercept backend (`Network` and `NetworkForward`) for transparent Windows traffic capture
-- [x] Fake-IP DNS pipeline with IPv4 and IPv6 address pools
-- [x] DNS UDP response synthesis and DNS-over-TCP redirection to the local fake DNS server
-- [x] Shared NAT for transparent request redirection and proxy response restoration
-- [x] Transparent HTTP and HTTPS interception with dynamic Rustls certificates
-- [x] High-performance Hyper-based upstream execution with full request body forwarding
-- [x] Structured rule engine with `exact`, `prefix`, `host`, `hosts`, `host_suffix`, `ip`, and `ip_cidr` matchers
-- [x] Structured rule actions with `mirror`, `direct`, and `reject`
-- [x] Extensible upstream options (`connect_ip`, `connect_host`, `sni`, and custom upstream DNS)
-- [x] CLI startup flow with config alias fallback (`--config mcdev` -> `config.mcdev.yml` etc.)
-- [x] Full config watch and runtime hot reload via `--watch-config`
-- [x] Experimental `backend.kind: tun` + `backend.tun.stack: smoltcp` backend with in-tunnel DNS handling
-- [x] Plugin runtime with `on_load`, `on_compile`, `on_request`, and `on_response` stages
-- [x] QuickJS plugin engine with module imports, worker pooling, and typed plugin authoring support
-- [x] Plugin request/response orchestration with compiled plugin rules, action overrides, and request/response patching
-- [x] Plugin body permissions with explicit `on_request.body` / `on_response.body` opt-in and lightweight no-body paths
-- [ ] Encrypted DNS interception for DoH/DoT
-- [ ] Rule groups with shared match scope, behaviors, and tags
-- [ ] Built-in response actions such as `respond` for static or template-driven mock replies
-- [ ] Response actions with built-in delay and latency simulation for mock scenarios
-- [ ] OpenAPI / Swagger-backed mock actions for API development workflows
-- [ ] Configurable observability core with in-memory metrics, recent events, and runtime state snapshots
-- [ ] Internal observability HTTP API for metrics, events, workers, and reload/runtime state
-- [ ] Web UI for traffic dashboard, rule debugging, and runtime inspection
-- [ ] System proxy management for explicit mode
-- [ ] Advanced structured matching (`method`, richer path/query constraints, optional wildcard host rules)
-- [ ] Built-in rule presets/import composition
-- [ ] Plugin file watch and automatic plugin-only reload triggers
-- [ ] Traffic monitoring and statistics
-- [ ] Production-ready cross-platform TUN/TAP support, including the `system` stack and platform-native hosts (longer-term)
+The next practical work is centered on debuggability, runtime visibility, and rule ergonomics.
+Transparent-mode-specific hard problems such as client-side DoH/DoT interception are intentionally
+kept later.
+
+### Near Term
+
+- Configurable observability core with in-memory metrics, recent events, and runtime state snapshots
+- Internal observability HTTP API for metrics, events, workers, and reload/runtime state
+- Traffic monitoring and statistics
+- Rule groups with shared match scope, behaviors, and tags
+- Advanced structured matching (`method`, richer path/query constraints, optional wildcard host rules)
+- Built-in rule presets/import composition
+- Plugin file watch and automatic plugin-only reload triggers
+- Rule behaviors for static or template-driven mock replies and latency simulation
+- Official OpenAPI / Swagger-driven plugin workflows for API development
+
+### Mid Term
+
+- Web UI for traffic dashboard, rule debugging, and runtime inspection
+- System proxy management for explicit mode
+
+### Longer Term
+
+- Production-ready cross-platform TUN/TAP support, including the `system` stack and platform-native hosts
+- Encrypted DNS interception for client-side DoH/DoT in transparent mode
