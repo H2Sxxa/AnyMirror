@@ -140,6 +140,21 @@ impl RulePriority {
     pub fn from_value(value: i32) -> Self {
         Self(value)
     }
+
+    pub fn value(self) -> i32 {
+        self.0
+    }
+
+    pub fn semantic_name(self) -> Option<&'static str> {
+        match self {
+            Self::XLOW => Some("xlow"),
+            Self::LOW => Some("low"),
+            Self::MEDIUM => Some("medium"),
+            Self::HIGH => Some("high"),
+            Self::XHIGH => Some("xhigh"),
+            _ => None,
+        }
+    }
 }
 
 impl Default for RulePriority {

@@ -7,7 +7,7 @@ use crate::rules::model::{
     HostPattern, HostRuleMatcher, RespondBodySource, Rule, RuleAction, RuleActionKind, RuleKind,
     RuleMatcher, RulePriority, UpstreamPlan,
 };
-use crate::rules::pool::RuleSet;
+use crate::rules::pool::{RuleExplainPropagation, RuleSet};
 use crate::rules::schema::RuleSchema;
 
 #[test]
@@ -512,4 +512,52 @@ fn numeric_priority_values_are_supported() {
 
     assert_eq!(resolved.action_kind(), RuleActionKind::Reject);
     assert_eq!(resolved.reject().unwrap().message, "numeric priority");
+}
+
+#[test]
+fn explain_groups_candidates_by_priority_and_spread() {
+    let rule_schema: Vec<RuleSchema> = serde_yaml::from_str(
+        r#"
+- match:
+    host: api.example.com
+  priority: xhigh
+  spread: true
+  action:
+    type: direct
+- match:
+    host: api.example.com
+  priority: low
+  action:
+    type: reject
+    status: 451
+    message: lower priority
+"#,
+    )
+    .unwrap();
+    let rules = RuleSet::try_from(rule_schema).unwrap();
+    let original = Url::parse("https://api.example.com/ping").unwrap();
+
+    let explanation = rules.explain(&original);
+
+    assert_eq!(explanation.priority_groups.len(), 2);
+    assert_eq!(
+        explanation.priority_groups[0].propagation,
+        RuleExplainPropagation::Continue
+    );
+    assert_eq!(
+        explanation.priority_groups[0]
+            .winner
+            .as_ref()
+            .unwrap()
+            .action_kind,
+        "direct"
+    );
+    assert_eq!(
+        explanation.priority_groups[1].propagation,
+        RuleExplainPropagation::Stop
+    );
+    assert_eq!(
+        explanation.final_match.as_ref().unwrap().action_kind,
+        "reject"
+    );
 }

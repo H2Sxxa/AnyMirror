@@ -10,8 +10,12 @@ use super::super::model::{
     HostPattern, HostRuleMatcher, IpPattern, IpRuleMatcher, ResolvedRuleAction, Rule, RuleAction,
     RuleKind, RuleMatcher, UpstreamPlan,
 };
-use super::MatchedRule;
 use super::compiled::{CompiledRuleIndex, ExactUrlKey, OriginKey};
+use super::{
+    MatchedRule, RuleExplainCandidate, RuleExplainPriority, RuleExplainPriorityGroup,
+    RuleExplainPropagation, RuleExplainTrace, RuleExplainWinner, resolved_action_kind_name,
+    rule_action_kind_name, rule_matcher_kind_name,
+};
 
 struct LookupContext<'a> {
     exact_url_key: ExactUrlKey,
@@ -191,6 +195,16 @@ impl CompiledRuleIndex {
         resolve_candidates(entries, original, &lookup, &candidate_indices)
     }
 
+    pub(super) fn explain(&self, entries: &[Rule], original: &Url) -> RuleExplainTrace {
+        let lookup = LookupContext::from_url(original);
+        let mut candidate_indices = self.collect_candidate_indices(original, &lookup);
+        candidate_indices
+            .sort_unstable_by(|left, right| compare_candidate_order(entries, *left, *right));
+        candidate_indices.dedup();
+
+        explain_candidates(entries, original, &lookup, &candidate_indices)
+    }
+
     fn collect_candidate_indices(&self, original: &Url, lookup: &LookupContext<'_>) -> Vec<usize> {
         let mut candidate_indices = Vec::new();
 
@@ -319,6 +333,121 @@ fn compare_candidate_order(entries: &[Rule], left: usize, right: usize) -> std::
         .priority
         .cmp(&entries[left].priority)
         .then_with(|| left.cmp(&right))
+}
+
+fn explain_candidates(
+    entries: &[Rule],
+    original: &Url,
+    lookup: &LookupContext<'_>,
+    candidate_indices: &[usize],
+) -> RuleExplainTrace {
+    let mut priority_groups = Vec::new();
+    let mut current_priority = None;
+    let mut current_candidates = Vec::new();
+    let mut current_winner = None;
+    let mut final_winner = None;
+
+    for index in candidate_indices {
+        let rule = &entries[*index];
+        if current_priority != Some(rule.priority) {
+            finalize_explain_group(
+                &mut priority_groups,
+                &mut current_priority,
+                &mut current_candidates,
+                &mut current_winner,
+                &mut final_winner,
+            );
+            current_priority = Some(rule.priority);
+        }
+
+        if current_winner.is_some() {
+            current_candidates.push(RuleExplainCandidate {
+                rule_index: *index,
+                matcher_kind: rule_matcher_kind_name(rule),
+                action_kind: rule_action_kind_name(&rule.action),
+                priority: RuleExplainPriority::from(rule.priority),
+                spread: rule.spread,
+                matched: None,
+            });
+            continue;
+        }
+
+        match rule.resolve_with_lookup(original, lookup) {
+            Some(action) => {
+                current_candidates.push(RuleExplainCandidate {
+                    rule_index: *index,
+                    matcher_kind: rule_matcher_kind_name(rule),
+                    action_kind: resolved_action_kind_name(&action),
+                    priority: RuleExplainPriority::from(rule.priority),
+                    spread: rule.spread,
+                    matched: Some(true),
+                });
+                current_winner = Some(RuleExplainWinner {
+                    rule_index: *index,
+                    matcher_kind: rule_matcher_kind_name(rule),
+                    action_kind: resolved_action_kind_name(&action),
+                    priority: RuleExplainPriority::from(rule.priority),
+                    spread: rule.spread,
+                    upstream_url: action.upstream().map(|upstream| upstream.url.to_string()),
+                });
+            }
+            None => {
+                current_candidates.push(RuleExplainCandidate {
+                    rule_index: *index,
+                    matcher_kind: rule_matcher_kind_name(rule),
+                    action_kind: rule_action_kind_name(&rule.action),
+                    priority: RuleExplainPriority::from(rule.priority),
+                    spread: rule.spread,
+                    matched: Some(false),
+                });
+            }
+        }
+    }
+
+    finalize_explain_group(
+        &mut priority_groups,
+        &mut current_priority,
+        &mut current_candidates,
+        &mut current_winner,
+        &mut final_winner,
+    );
+
+    RuleExplainTrace {
+        priority_groups,
+        final_match: final_winner,
+    }
+}
+
+fn finalize_explain_group(
+    priority_groups: &mut Vec<RuleExplainPriorityGroup>,
+    current_priority: &mut Option<super::super::model::RulePriority>,
+    current_candidates: &mut Vec<RuleExplainCandidate>,
+    current_winner: &mut Option<RuleExplainWinner>,
+    final_winner: &mut Option<RuleExplainWinner>,
+) {
+    let Some(priority) = current_priority.take() else {
+        return;
+    };
+
+    let winner = current_winner.take();
+    let propagation = match winner.as_ref() {
+        Some(winner) if winner.spread => {
+            *final_winner = Some(winner.clone());
+            RuleExplainPropagation::Continue
+        }
+        Some(winner) => {
+            *final_winner = Some(winner.clone());
+            RuleExplainPropagation::Stop
+        }
+        None => RuleExplainPropagation::NoMatch,
+    };
+
+    priority_groups.push(RuleExplainPriorityGroup {
+        priority: RuleExplainPriority::from(priority),
+        candidates: std::mem::take(current_candidates),
+        winner,
+        propagation,
+    });
 }
 
 fn matches_common_lookup_parts(

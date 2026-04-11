@@ -15,12 +15,14 @@ use super::{
         health::healthz,
         observability::{recent_events, runtime_state},
         rewrite::rewrite_url,
+        rules::explain_rules,
     },
     state::AppState,
 };
 
 pub(super) fn build_common_router<E: UpstreamExecutor>() -> Router<AppState<E>> {
     Router::new()
+        .route("/rules/explain", get(explain_rules::<E>))
         .route("/events", get(recent_events::<E>))
         .route("/state", get(runtime_state::<E>))
         .route("/healthz", get(healthz))

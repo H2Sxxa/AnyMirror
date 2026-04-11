@@ -424,6 +424,10 @@ FakeDnsServer -> Intercept Backend -> Local Proxy -> Mirror/Direct upstream
 - `GET /state`：当前进程内运行时快照
 - `GET /events`：最近的进程内运行时事件
 
+同一个 listener 还会提供一个规则调试接口：
+
+- `GET /rules/explain?url=<url>`：按 `priority`、配置顺序和 `spread` 解释候选规则的求值过程
+
 ## 当前状态
 
 - 核心的透明 fake-ip 主链已经实现并可用。

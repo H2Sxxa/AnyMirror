@@ -431,6 +431,10 @@ When the observability subsystem is enabled, the same listener also exposes:
 - `GET /state`: current in-memory runtime snapshot
 - `GET /events`: recent in-memory runtime events
 
+The same listener also exposes a rule-debugging endpoint:
+
+- `GET /rules/explain?url=<url>`: explain candidate rule evaluation by `priority`, config order, and `spread`
+
 ## Project Status
 
 - The core transparent fake-ip pipeline is implemented and usable today.
