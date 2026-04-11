@@ -156,10 +156,11 @@ backend:
     dns_hijack:                 # 可选：tun+smoltcp 的 DNS 劫持目标
       - any:53                 # 劫持 UDP DNS
       - tcp://any:53           # 劫持 TCP DNS
-telemetry:
-  enabled: true
-  service_name: anymirror
-  otlp_endpoint: http://127.0.0.1:4317   # 指向 Jaeger / OTel Collector OTLP gRPC
+observability:
+  enable: false
+  telemetry:
+    service_name: anymirror
+    otlp_endpoint: http://127.0.0.1:4317   # 指向 Jaeger / OTel Collector OTLP gRPC
 
 includes:
   - match:
@@ -212,6 +213,9 @@ includes:
 - **backend.tun.stack**：TUN 栈选择器。当前默认值是 `smoltcp`。`system` 目前还是 TODO；`smoltcp` 会启用实验性的用户态 TCP/IP 栈后端。
 - **backend.tun.platform_dns**：控制 `tun + smoltcp` 的平台 DNS 自动化。`auto` 表示启用平台相关的 DNS 设置；`manual` 表示由用户自己配置。默认值是 Windows 为 `auto`，其他平台为 `manual`。
 - **backend.tun.dns_hijack**：`tun + smoltcp` 的可选 DNS 劫持目标列表。`any:53` 表示劫持发往任意目标的 UDP DNS；`tcp://any:53` 表示劫持发往任意目标的 TCP DNS。即使这个列表为空，保留的 TUN 站内 DNS 地址仍然总会被劫持。
+- **observability.enable**：可观测子系统总开关。关闭后，AnyMirror 只保留本地 tracing 输出，不会初始化 OTLP trace 导出。
+- **observability.telemetry.service_name**：导出 trace 时使用的 OpenTelemetry service name。
+- **observability.telemetry.otlp_endpoint**：用于 trace 导出的 OTLP gRPC 端点。
 - **includes：** 结构化 `match + action` 规则列表（见下方规则匹配模式）
 
 ### 当前 TUN 说明
@@ -388,6 +392,11 @@ FakeDnsServer -> Intercept Backend -> Local Proxy -> Mirror/Direct upstream
 
 对于显式代理模式，客户端的 HTTP/HTTPS 代理配置都只需要指向 `listen`（例如
 `127.0.0.1:8787`）。`tls_port` 不是显式 HTTPS 代理端口。
+
+启用可观测子系统后，同一个 listener 还会额外暴露：
+
+- `GET /state`：当前进程内运行时快照
+- `GET /events`：最近的进程内运行时事件
 
 ## 当前状态
 

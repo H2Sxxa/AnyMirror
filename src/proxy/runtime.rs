@@ -6,6 +6,9 @@ use tokio::sync::mpsc;
 
 use crate::config::AppConfig;
 use crate::config::{BackendOptions, TransparentBackendKind, TunStack};
+use crate::observability::{
+    ObservabilityEvent, ObservabilityEventLevel, ObservabilityRuntime, RuntimeSnapshot,
+};
 use crate::plugins::LivePluginRegistry;
 use crate::rules::pool::LiveRuleSet;
 use crate::supervisors::{
@@ -39,7 +42,7 @@ pub async fn serve_explicit(
     let listener_supervisor = ListenerSupervisor::new(workers.clone());
     let (reload_tx, mut reload_rx) = mpsc::unbounded_channel();
 
-    let state = build_state(config.listen_addr, live_rules.clone(), live_plugins.clone())?;
+    let state = build_state(&config, live_rules.clone(), live_plugins.clone())?;
     let app = build_common_router::<HyperExecutor>()
         .fallback(proxy_entry)
         .with_state(state.clone());
@@ -48,13 +51,27 @@ pub async fn serve_explicit(
         .await?;
     let mut config_watch = maybe_spawn_config_watch(
         watch_config_path,
-        &config,
         live_rules.clone(),
+        state.observability.clone(),
+        &config,
         workers.clone(),
         Some(reload_tx),
     );
     let mut active_config = config;
     let mut active_generation: u64 = 0;
+    update_explicit_snapshot(
+        &state.observability,
+        &active_config,
+        &state,
+        active_generation,
+    );
+    state.observability.record_event(|| {
+        ObservabilityEvent::new(
+            ObservabilityEventLevel::Info,
+            "runtime.explicit_started",
+            format!("Explicit proxy listening on {}", active_config.listen_addr),
+        )
+    });
 
     loop {
         tokio::select! {
@@ -63,6 +80,13 @@ pub async fn serve_explicit(
                     watch.shutdown().await;
                 }
                 http_handle.shutdown().await;
+                state.observability.record_event(|| {
+                    ObservabilityEvent::new(
+                        ObservabilityEventLevel::Info,
+                        "runtime.explicit_stopped",
+                        format!("Explicit proxy stopped on {}", active_config.listen_addr),
+                    )
+                });
                 return Ok(());
             }
             maybe_config = reload_rx.recv() => {
@@ -102,6 +126,18 @@ pub async fn serve_explicit(
                 }
                 active_generation = generation;
                 active_config = reloaded_config;
+                update_explicit_snapshot(&state.observability, &active_config, &state, active_generation);
+                state.observability.record_event(|| {
+                    ObservabilityEvent::new(
+                        ObservabilityEventLevel::Info,
+                        "runtime.explicit_reloaded",
+                        format!(
+                            "Applied explicit runtime reload generation {} on {}",
+                            active_generation,
+                            active_config.listen_addr
+                        ),
+                    )
+                });
             }
         }
     }
@@ -123,7 +159,7 @@ pub async fn serve_transparent(
     let intercept_supervisor = InterceptBackendSupervisor::new(workers.clone());
     let (reload_tx, mut reload_rx) = mpsc::unbounded_channel();
 
-    let state = build_state(config.listen_addr, live_rules.clone(), live_plugins.clone())?;
+    let state = build_state(&config, live_rules.clone(), live_plugins.clone())?;
     let app = build_common_router::<HyperExecutor>()
         .fallback(transparent_entry)
         .with_state(state.clone());
@@ -140,12 +176,30 @@ pub async fn serve_transparent(
     .await?;
     let mut config_watch = maybe_spawn_config_watch(
         watch_config_path,
-        &config,
         state.rules.clone(),
+        state.observability.clone(),
+        &config,
         workers.clone(),
         Some(reload_tx),
     );
     let mut active_generation: u64 = 0;
+    let mut active_config = config;
+    update_transparent_snapshot(
+        &state.observability,
+        &active_config,
+        &state,
+        active_generation,
+    );
+    state.observability.record_event(|| {
+        ObservabilityEvent::new(
+            ObservabilityEventLevel::Info,
+            "runtime.transparent_started",
+            format!(
+                "Transparent proxy listening on {}",
+                active_config.listen_addr
+            ),
+        )
+    });
 
     loop {
         tokio::select! {
@@ -154,6 +208,13 @@ pub async fn serve_transparent(
                     watch.shutdown().await;
                 }
                 runtime.shutdown().await;
+                state.observability.record_event(|| {
+                    ObservabilityEvent::new(
+                        ObservabilityEventLevel::Info,
+                        "runtime.transparent_stopped",
+                        format!("Transparent proxy stopped on {}", active_config.listen_addr),
+                    )
+                });
                 return Ok(());
             }
             maybe_config = reload_rx.recv() => {
@@ -196,22 +257,37 @@ pub async fn serve_transparent(
                     state.rules.clone(),
                 ).await?;
                 active_generation = generation;
+                active_config = reloaded_config;
+                update_transparent_snapshot(&state.observability, &active_config, &state, active_generation);
+                state.observability.record_event(|| {
+                    ObservabilityEvent::new(
+                        ObservabilityEventLevel::Info,
+                        "runtime.transparent_reloaded",
+                        format!(
+                            "Applied transparent runtime reload generation {} on {}",
+                            active_generation,
+                            active_config.listen_addr
+                        ),
+                    )
+                });
             }
         }
     }
 }
 
 fn build_state(
-    _listen_addr: std::net::SocketAddr,
+    config: &AppConfig,
     rules: LiveRuleSet,
     plugins: LivePluginRegistry,
 ) -> Result<AppState<HyperExecutor>> {
     let executor = HyperExecutor::new()?;
     let tls_intercept = TlsInterceptService::new()?;
+    let observability = ObservabilityRuntime::new(&config.observability);
 
     Ok(AppState {
         executor,
         tls_intercept,
+        observability,
         plugins,
         rules,
     })
@@ -219,18 +295,65 @@ fn build_state(
 
 fn maybe_spawn_config_watch(
     watch_config_path: Option<PathBuf>,
-    config: &AppConfig,
     live_rules: LiveRuleSet,
+    observability: ObservabilityRuntime,
+    config: &AppConfig,
     workers: Workers,
     reload_tx: Option<mpsc::UnboundedSender<ConfigReloadRequest>>,
 ) -> Option<ShutdownJoinHandle> {
     if let Some(path) = watch_config_path {
         return Some(spawn_config_watch(
-            path, config, live_rules, workers, reload_tx,
+            path,
+            config,
+            live_rules,
+            observability,
+            workers,
+            reload_tx,
         ));
     }
 
     None
+}
+
+fn update_explicit_snapshot(
+    observability: &ObservabilityRuntime,
+    config: &AppConfig,
+    state: &AppState<HyperExecutor>,
+    generation: u64,
+) {
+    let rule_count = state.rules.snapshot().len();
+    let plugin_count = state.plugins.len();
+    observability.replace_snapshot(|| RuntimeSnapshot {
+        listen_addr: Some(config.listen_addr),
+        tls_listen_addr: None,
+        fake_dns_listen_addr: None,
+        active_rule_count: rule_count,
+        active_plugin_count: plugin_count,
+        reload_generation: generation,
+    });
+}
+
+fn update_transparent_snapshot(
+    observability: &ObservabilityRuntime,
+    config: &AppConfig,
+    state: &AppState<HyperExecutor>,
+    generation: u64,
+) {
+    let rule_count = state.rules.snapshot().len();
+    let plugin_count = state.plugins.len();
+    let fake_dns_listen_addr =
+        should_start_fake_dns_runtime(&config.backend).then_some(config.backend.dns.listen_addr);
+    observability.replace_snapshot(|| RuntimeSnapshot {
+        listen_addr: Some(config.listen_addr),
+        tls_listen_addr: Some(std::net::SocketAddr::new(
+            config.listen_addr.ip(),
+            effective_tls_port(config),
+        )),
+        fake_dns_listen_addr,
+        active_rule_count: rule_count,
+        active_plugin_count: plugin_count,
+        reload_generation: generation,
+    });
 }
 
 fn take_latest_reload_request(

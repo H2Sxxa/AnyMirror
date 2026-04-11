@@ -10,12 +10,19 @@ use tracing::Span;
 
 use super::{
     executors::UpstreamExecutor,
-    handlers::{fetch::fetch_url, health::healthz, rewrite::rewrite_url},
+    handlers::{
+        fetch::fetch_url,
+        health::healthz,
+        observability::{recent_events, runtime_state},
+        rewrite::rewrite_url,
+    },
     state::AppState,
 };
 
 pub(super) fn build_common_router<E: UpstreamExecutor>() -> Router<AppState<E>> {
     Router::new()
+        .route("/events", get(recent_events::<E>))
+        .route("/state", get(runtime_state::<E>))
         .route("/healthz", get(healthz))
         .route("/rewrite", get(rewrite_url))
         .route("/fetch", get(fetch_url).head(fetch_url))

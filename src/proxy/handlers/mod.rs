@@ -2,6 +2,7 @@ pub(super) mod common;
 pub(super) mod explicit_https;
 pub(super) mod fetch;
 pub(super) mod health;
+pub(super) mod observability;
 pub(super) mod proxy_entry;
 pub(super) mod rewrite;
 pub(super) mod transparent;

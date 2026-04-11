@@ -159,10 +159,11 @@ backend:
     dns_hijack:                 # Optional: DNS hijack targets for tun+smoltcp
       - any:53                 # UDP DNS hijack
       - tcp://any:53           # TCP DNS hijack
-telemetry:
-  enabled: true
-  service_name: anymirror
-  otlp_endpoint: http://127.0.0.1:4317   # Jaeger / OTel Collector OTLP gRPC endpoint
+observability:
+  enable: false
+  telemetry:
+    service_name: anymirror
+    otlp_endpoint: http://127.0.0.1:4317   # Jaeger / OTel Collector OTLP gRPC endpoint
 
 includes:
   - match:
@@ -215,6 +216,9 @@ includes:
 - **backend.tun.stack**: TUN stack selector. The current default is `smoltcp`. `system` is currently TODO. `smoltcp` enables the experimental userspace TCP/IP stack backend.
 - **backend.tun.platform_dns**: Controls platform DNS automation for `tun + smoltcp`. `auto` enables platform-specific DNS setup; `manual` leaves DNS configuration to the user. The default is `auto` on Windows and `manual` on other platforms.
 - **backend.tun.dns_hijack**: Optional DNS hijack target list for `tun + smoltcp`. `any:53` hijacks UDP DNS to any destination; `tcp://any:53` hijacks TCP DNS to any destination. Reserved in-tunnel DNS addresses are always hijacked even if this list is empty.
+- **observability.enable**: Master switch for the observability subsystem. When disabled, AnyMirror keeps plain local tracing output only and does not initialize OTLP trace export.
+- **observability.telemetry.service_name**: OpenTelemetry service name used for exported traces.
+- **observability.telemetry.otlp_endpoint**: OTLP gRPC endpoint used for trace export.
 - **includes:** List of structured `match + action` rules (see Rule Matching Modes below)
 
 ### Current TUN Notes
@@ -395,6 +399,11 @@ For plugin lifecycle, request/response action overrides, and response flow, see
 
 For explicit mode, clients should only point their HTTP/HTTPS proxy settings at `listen` (for
 example `127.0.0.1:8787`). `tls_port` is not an explicit HTTPS proxy port.
+
+When the observability subsystem is enabled, the same listener also exposes:
+
+- `GET /state`: current in-memory runtime snapshot
+- `GET /events`: recent in-memory runtime events
 
 ## Project Status
 

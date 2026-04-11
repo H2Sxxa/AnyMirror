@@ -11,6 +11,7 @@ use tokio::{
 
 use crate::{
     config::{AppConfig, BackendOptions, PluginRuntimeOptions, load_config},
+    observability::{ObservabilityEvent, ObservabilityEventLevel, ObservabilityRuntime},
     rules::pool::LiveRuleSet,
     workers::{ShutdownJoinHandle, Workers},
 };
@@ -36,6 +37,7 @@ pub fn spawn_config_watch(
     path: PathBuf,
     active_config: &AppConfig,
     live_rules: LiveRuleSet,
+    observability: ObservabilityRuntime,
     workers: Workers,
     reload_tx: Option<mpsc::UnboundedSender<ConfigReloadRequest>>,
 ) -> ShutdownJoinHandle {
@@ -65,6 +67,13 @@ pub fn spawn_config_watch(
             stable_window_secs = CONFIG_WATCH_STABLE_WINDOW.as_secs(),
             "Config watch started"
         );
+        observability.record_event(|| {
+            ObservabilityEvent::new(
+                ObservabilityEventLevel::Info,
+                "config_watch.started",
+                format!("Started config watch for {}", path.display()),
+            )
+        });
 
         loop {
             tokio::select! {
@@ -73,6 +82,13 @@ pub fn spawn_config_watch(
                         config_path = %path.display(),
                         "Config watch stopped"
                     );
+                    observability.record_event(|| {
+                        ObservabilityEvent::new(
+                            ObservabilityEventLevel::Info,
+                            "config_watch.stopped",
+                            format!("Stopped config watch for {}", path.display()),
+                        )
+                    });
                     return;
                 }
                 _ = interval.tick() => {}
@@ -114,6 +130,17 @@ pub fn spawn_config_watch(
                         rule_count,
                         "Hot reloaded config rules"
                     );
+                    observability.record_event(|| {
+                        ObservabilityEvent::new(
+                            ObservabilityEventLevel::Info,
+                            "config_watch.rules_reloaded",
+                            format!(
+                                "Reloaded rules from {} with {} active rules",
+                                path.display(),
+                                rule_count
+                            ),
+                        )
+                    });
 
                     if let Some(reload_tx) = reload_tx.as_ref() {
                         let next_runtime_snapshot =
@@ -143,9 +170,31 @@ pub fn spawn_config_watch(
                                 ?error,
                                 "Failed to enqueue runtime reload"
                             );
+                            observability.record_event(|| {
+                                ObservabilityEvent::new(
+                                    ObservabilityEventLevel::Error,
+                                    "config_watch.reload_enqueue_failed",
+                                    format!(
+                                        "Failed to enqueue runtime reload for {}: {}",
+                                        path.display(),
+                                        error
+                                    ),
+                                )
+                            });
                         } else {
                             static_config = next_runtime_snapshot;
                             next_generation = next_generation.saturating_add(1);
+                            observability.record_event(|| {
+                                ObservabilityEvent::new(
+                                    ObservabilityEventLevel::Info,
+                                    "config_watch.reload_enqueued",
+                                    format!(
+                                        "Enqueued runtime reload generation {} for {}",
+                                        next_generation.saturating_sub(1),
+                                        path.display()
+                                    ),
+                                )
+                            });
                         }
                     }
                 }
@@ -155,6 +204,13 @@ pub fn spawn_config_watch(
                         ?error,
                         "Failed to hot reload config file"
                     );
+                    observability.record_event(|| {
+                        ObservabilityEvent::new(
+                            ObservabilityEventLevel::Error,
+                            "config_watch.reload_failed",
+                            format!("Failed to reload config {}: {}", path.display(), error),
+                        )
+                    });
                 }
             }
 

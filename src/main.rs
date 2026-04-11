@@ -1,10 +1,10 @@
 mod config;
+pub mod observability;
 mod plugins;
 mod proxy;
 mod rules;
 mod socket;
 mod supervisors;
-mod telemetry;
 mod traffic;
 mod watch;
 mod workers;
@@ -42,7 +42,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let config_path = config::resolve_config_path(&cli.config)?;
     let config = config::load_config(&config_path)?;
-    let telemetry_guard = telemetry::init_tracing(&config.telemetry)?;
+    let telemetry_guard = observability::init_tracing(&config.observability)?;
     let workers = workers::Workers::new();
 
     let banner = cfonts::render(cfonts::Options {
@@ -61,10 +61,10 @@ async fn main() -> Result<()> {
         cli.mode
     );
     tracing::info!("config loaded from {}", config_path.display());
-    if config.telemetry.enabled {
+    if config.observability.enabled {
         tracing::info!(
-            service_name = %config.telemetry.service_name,
-            otlp_endpoint = %config.telemetry.otlp_endpoint,
+            service_name = %config.observability.telemetry.service_name,
+            otlp_endpoint = %config.observability.telemetry.otlp_endpoint,
             "OpenTelemetry trace export enabled"
         );
     }

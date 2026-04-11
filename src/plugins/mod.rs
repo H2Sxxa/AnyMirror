@@ -249,6 +249,10 @@ impl LivePluginRegistry {
     pub fn replace(&self, registry: PluginRegistry) {
         self.inner.store(Arc::new(registry));
     }
+
+    pub fn len(&self) -> usize {
+        self.snapshot().len()
+    }
 }
 
 impl Clone for LivePluginRegistry {
@@ -256,6 +260,12 @@ impl Clone for LivePluginRegistry {
         Self {
             inner: self.inner.clone(),
         }
+    }
+}
+
+impl PluginRegistry {
+    pub fn len(&self) -> usize {
+        self.plugins.len()
     }
 }
 

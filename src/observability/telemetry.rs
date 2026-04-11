@@ -4,7 +4,7 @@ use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{Resource, trace::SdkTracerProvider};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::config::TelemetryOptions;
+use crate::config::{ObservabilityOptions, TelemetryOptions};
 
 pub struct TelemetryGuard {
     provider: Option<SdkTracerProvider>,
@@ -22,12 +22,12 @@ impl TelemetryGuard {
     }
 }
 
-pub fn init_tracing(telemetry: &TelemetryOptions) -> Result<TelemetryGuard> {
+pub fn init_tracing(observability: &ObservabilityOptions) -> Result<TelemetryGuard> {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| "anymirror=debug,tower_http=debug".into());
     let fmt_layer = tracing_subscriber::fmt::layer();
 
-    if !telemetry.enabled {
+    if !observability.enabled {
         tracing_subscriber::registry()
             .with(env_filter)
             .with(fmt_layer)
@@ -36,6 +36,7 @@ pub fn init_tracing(telemetry: &TelemetryOptions) -> Result<TelemetryGuard> {
         return Ok(TelemetryGuard { provider: None });
     }
 
+    let telemetry = &observability.telemetry;
     let provider = build_tracer_provider(telemetry)?;
     let tracer = provider.tracer(telemetry.service_name.clone());
     let telemetry_layer = tracing_opentelemetry::layer().with_tracer(tracer);

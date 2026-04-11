@@ -18,7 +18,7 @@ pub struct AppConfig {
     pub listen_addr: SocketAddr,
     pub tls_port: Option<u16>,
     pub backend: BackendOptions,
-    pub telemetry: TelemetryOptions,
+    pub observability: ObservabilityOptions,
     pub plugins: PluginRuntimeOptions,
     pub rules: RuleSet,
 }
@@ -103,8 +103,13 @@ pub struct PluginRuntimeOptions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TelemetryOptions {
+pub struct ObservabilityOptions {
     pub enabled: bool,
+    pub telemetry: TelemetryOptions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TelemetryOptions {
     pub service_name: String,
     pub otlp_endpoint: String,
 }
@@ -146,7 +151,7 @@ struct RawConfig {
     #[serde(default)]
     backend: RawBackendOptions,
     #[serde(default)]
-    telemetry: RawTelemetryOptions,
+    observability: RawObservabilityOptions,
     #[serde(default)]
     plugins: RawPluginRuntimeOptions,
     #[serde(default, alias = "rules")]
@@ -228,9 +233,15 @@ struct RawPluginRuntimeOptions {
 }
 
 #[derive(Debug, Deserialize)]
-struct RawTelemetryOptions {
+struct RawObservabilityOptions {
+    #[serde(default, alias = "enabled")]
+    enable: bool,
     #[serde(default)]
-    enabled: bool,
+    telemetry: RawTelemetryOptions,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawTelemetryOptions {
     #[serde(default = "default_telemetry_service_name")]
     service_name: String,
     #[serde(default = "default_telemetry_otlp_endpoint")]
@@ -250,9 +261,17 @@ impl Default for RawPluginRuntimeOptions {
 impl Default for RawTelemetryOptions {
     fn default() -> Self {
         Self {
-            enabled: false,
             service_name: default_telemetry_service_name(),
             otlp_endpoint: default_telemetry_otlp_endpoint(),
+        }
+    }
+}
+
+impl Default for RawObservabilityOptions {
+    fn default() -> Self {
+        Self {
+            enable: false,
+            telemetry: RawTelemetryOptions::default(),
         }
     }
 }
@@ -325,7 +344,7 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<AppConfig> {
         listen_addr,
         tls_port: parsed.tls_port,
         backend: BackendOptions::try_from(parsed.backend)?,
-        telemetry: TelemetryOptions::try_from(parsed.telemetry)?,
+        observability: ObservabilityOptions::try_from(parsed.observability)?,
         plugins,
         rules,
     })
@@ -521,19 +540,29 @@ impl PluginRuntimeOptions {
     }
 }
 
+impl TryFrom<RawObservabilityOptions> for ObservabilityOptions {
+    type Error = anyhow::Error;
+
+    fn try_from(value: RawObservabilityOptions) -> Result<Self> {
+        Ok(Self {
+            enabled: value.enable,
+            telemetry: TelemetryOptions::try_from(value.telemetry)?,
+        })
+    }
+}
+
 impl TryFrom<RawTelemetryOptions> for TelemetryOptions {
     type Error = anyhow::Error;
 
     fn try_from(value: RawTelemetryOptions) -> Result<Self> {
         if value.service_name.trim().is_empty() {
-            bail!("telemetry.service_name must not be empty");
+            bail!("observability.telemetry.service_name must not be empty");
         }
         if value.otlp_endpoint.trim().is_empty() {
-            bail!("telemetry.otlp_endpoint must not be empty");
+            bail!("observability.telemetry.otlp_endpoint must not be empty");
         }
 
         Ok(Self {
-            enabled: value.enabled,
             service_name: value.service_name,
             otlp_endpoint: value.otlp_endpoint,
         })
