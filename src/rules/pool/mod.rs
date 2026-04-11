@@ -53,6 +53,7 @@ pub struct RuleExplainCandidate {
     pub priority: RuleExplainPriority,
     pub spread: bool,
     pub matched: Option<bool>,
+    pub mismatch_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -27,6 +27,11 @@ struct LookupContext<'a> {
     ip: Option<IpAddr>,
 }
 
+enum RuleMatchExplain<'a> {
+    Matched(Option<&'a str>),
+    Mismatch(String),
+}
+
 impl Rule {
     #[cfg(test)]
     pub fn resolve(&self, original: &Url) -> Option<ResolvedRuleAction> {
@@ -39,9 +44,8 @@ impl Rule {
         original: &Url,
         lookup: &LookupContext<'_>,
     ) -> Option<ResolvedRuleAction> {
-        self.matcher
-            .resolve_with_lookup(original, lookup)
-            .map(|path_suffix| match &self.action {
+        match self.matcher.explain_with_lookup(original, lookup) {
+            RuleMatchExplain::Matched(path_suffix) => Some(match &self.action {
                 RuleAction::Mirror(upstream) => ResolvedRuleAction::Mirror(
                     resolve_mirror_upstream(upstream, original, path_suffix),
                 ),
@@ -49,7 +53,9 @@ impl Rule {
                 RuleAction::Respond(respond) => ResolvedRuleAction::Respond(respond.clone()),
                 RuleAction::Plugin(plugin) => ResolvedRuleAction::Plugin(plugin.clone()),
                 RuleAction::Reject(reject) => ResolvedRuleAction::Reject(reject.clone()),
-            })
+            }),
+            RuleMatchExplain::Mismatch(_) => None,
+        }
     }
 }
 
@@ -81,22 +87,35 @@ impl RuleMatcher {
         }
     }
 
-    fn resolve_with_lookup<'a>(
+    fn explain_with_lookup<'a>(
         &'a self,
         original: &'a Url,
         lookup: &LookupContext<'a>,
-    ) -> Option<Option<&'a str>> {
+    ) -> RuleMatchExplain<'a> {
         match self {
-            Self::ExactUrl { origin } => same_url(original, origin).then_some(None),
+            Self::ExactUrl { origin } => {
+                if same_url(original, origin) {
+                    RuleMatchExplain::Matched(None)
+                } else {
+                    RuleMatchExplain::Mismatch(format!(
+                        "exact URL mismatch: expected `{origin}`, got `{original}`"
+                    ))
+                }
+            }
             Self::PrefixUrl { origin } => {
                 if !same_origin(original, origin) {
-                    return None;
+                    return RuleMatchExplain::Mismatch(format!(
+                        "origin mismatch: expected origin `{origin}`, got `{}`",
+                        original.origin().ascii_serialization()
+                    ));
                 }
 
                 let origin_path = origin.path();
                 let original_path = original.path();
                 if !path_has_prefix(original_path, origin_path) {
-                    return None;
+                    return RuleMatchExplain::Mismatch(format!(
+                        "path prefix mismatch: expected prefix `{origin_path}`, got `{original_path}`"
+                    ));
                 }
 
                 let suffix = original_path
@@ -104,42 +123,70 @@ impl RuleMatcher {
                     .or_else(|| original_path.strip_prefix('/'))
                     .unwrap_or_default();
 
-                Some(Some(suffix))
+                RuleMatchExplain::Matched(Some(suffix))
             }
-            Self::Host(host_matcher) => host_matcher
-                .matches_lookup(lookup)
-                .then_some(host_matcher.path_suffix(lookup)),
-            Self::Ip(ip_matcher) => ip_matcher
-                .matches_lookup(lookup)
-                .then_some(ip_matcher.path_suffix(lookup)),
+            Self::Host(host_matcher) => host_matcher.explain_match(lookup),
+            Self::Ip(ip_matcher) => ip_matcher.explain_match(lookup),
         }
     }
 }
 
 impl HostRuleMatcher {
-    fn matches_lookup(&self, lookup: &LookupContext<'_>) -> bool {
-        if !matches_common_lookup_parts(
+    fn explain_match<'a>(&'a self, lookup: &LookupContext<'a>) -> RuleMatchExplain<'a> {
+        if let Err(reason) = explain_common_lookup_parts(
             self.scheme.as_deref(),
             self.port,
             self.path_prefix.as_deref(),
             lookup,
         ) {
-            return false;
+            return RuleMatchExplain::Mismatch(reason);
         }
 
         let Some(host) = lookup.normalized_host.as_deref() else {
-            return false;
+            return RuleMatchExplain::Mismatch(
+                "request URL does not contain a hostname".to_string(),
+            );
         };
 
-        match &self.pattern {
-            HostPattern::Exact(expected) => expected == host,
-            HostPattern::AnyOf(expected) => expected.iter().any(|value| value == host),
+        let matched = match &self.pattern {
+            HostPattern::Exact(expected) => {
+                if expected == host {
+                    true
+                } else {
+                    return RuleMatchExplain::Mismatch(format!(
+                        "host mismatch: expected `{expected}`, got `{host}`"
+                    ));
+                }
+            }
+            HostPattern::AnyOf(expected) => {
+                if expected.iter().any(|value| value == host) {
+                    true
+                } else {
+                    return RuleMatchExplain::Mismatch(format!(
+                        "host mismatch: expected one of [{}], got `{host}`",
+                        expected.join(", ")
+                    ));
+                }
+            }
             HostPattern::Suffix(expected) => {
-                host == expected
+                if host == expected
                     || host
                         .strip_suffix(expected)
                         .is_some_and(|value| value.ends_with('.'))
+                {
+                    true
+                } else {
+                    return RuleMatchExplain::Mismatch(format!(
+                        "host suffix mismatch: expected suffix `{expected}`, got `{host}`"
+                    ));
+                }
             }
+        };
+
+        if matched {
+            RuleMatchExplain::Matched(self.path_suffix(lookup))
+        } else {
+            unreachable!("host matcher explanation must return earlier on mismatch")
         }
     }
 
@@ -152,23 +199,47 @@ impl HostRuleMatcher {
 }
 
 impl IpRuleMatcher {
-    fn matches_lookup(&self, lookup: &LookupContext<'_>) -> bool {
-        if !matches_common_lookup_parts(
+    fn explain_match<'a>(&'a self, lookup: &LookupContext<'a>) -> RuleMatchExplain<'a> {
+        if let Err(reason) = explain_common_lookup_parts(
             self.scheme.as_deref(),
             self.port,
             self.path_prefix.as_deref(),
             lookup,
         ) {
-            return false;
+            return RuleMatchExplain::Mismatch(reason);
         }
 
         let Some(original_ip) = lookup.ip else {
-            return false;
+            return RuleMatchExplain::Mismatch(
+                "request URL host is not a literal IP address".to_string(),
+            );
         };
 
-        match &self.pattern {
-            IpPattern::Exact(expected) => expected == &original_ip,
-            IpPattern::Cidr(expected) => expected.contains(&original_ip),
+        let matched = match &self.pattern {
+            IpPattern::Exact(expected) => {
+                if expected == &original_ip {
+                    true
+                } else {
+                    return RuleMatchExplain::Mismatch(format!(
+                        "ip mismatch: expected `{expected}`, got `{original_ip}`"
+                    ));
+                }
+            }
+            IpPattern::Cidr(expected) => {
+                if expected.contains(&original_ip) {
+                    true
+                } else {
+                    return RuleMatchExplain::Mismatch(format!(
+                        "ip cidr mismatch: expected `{expected}`, got `{original_ip}`"
+                    ));
+                }
+            }
+        };
+
+        if matched {
+            RuleMatchExplain::Matched(self.path_suffix(lookup))
+        } else {
+            unreachable!("ip matcher explanation must return earlier on mismatch")
         }
     }
 
@@ -368,12 +439,24 @@ fn explain_candidates(
                 priority: RuleExplainPriority::from(rule.priority),
                 spread: rule.spread,
                 matched: None,
+                mismatch_reason: None,
             });
             continue;
         }
 
-        match rule.resolve_with_lookup(original, lookup) {
-            Some(action) => {
+        match rule.matcher.explain_with_lookup(original, lookup) {
+            RuleMatchExplain::Matched(path_suffix) => {
+                let action = match &rule.action {
+                    RuleAction::Mirror(upstream) => ResolvedRuleAction::Mirror(
+                        resolve_mirror_upstream(upstream, original, path_suffix),
+                    ),
+                    RuleAction::Direct => {
+                        ResolvedRuleAction::Direct(UpstreamPlan::direct(original))
+                    }
+                    RuleAction::Respond(respond) => ResolvedRuleAction::Respond(respond.clone()),
+                    RuleAction::Plugin(plugin) => ResolvedRuleAction::Plugin(plugin.clone()),
+                    RuleAction::Reject(reject) => ResolvedRuleAction::Reject(reject.clone()),
+                };
                 current_candidates.push(RuleExplainCandidate {
                     rule_index: *index,
                     matcher_kind: rule_matcher_kind_name(rule),
@@ -381,6 +464,7 @@ fn explain_candidates(
                     priority: RuleExplainPriority::from(rule.priority),
                     spread: rule.spread,
                     matched: Some(true),
+                    mismatch_reason: None,
                 });
                 current_winner = Some(RuleExplainWinner {
                     rule_index: *index,
@@ -391,7 +475,7 @@ fn explain_candidates(
                     upstream_url: action.upstream().map(|upstream| upstream.url.to_string()),
                 });
             }
-            None => {
+            RuleMatchExplain::Mismatch(reason) => {
                 current_candidates.push(RuleExplainCandidate {
                     rule_index: *index,
                     matcher_kind: rule_matcher_kind_name(rule),
@@ -399,6 +483,7 @@ fn explain_candidates(
                     priority: RuleExplainPriority::from(rule.priority),
                     spread: rule.spread,
                     matched: Some(false),
+                    mismatch_reason: Some(reason),
                 });
             }
         }
@@ -450,28 +535,43 @@ fn finalize_explain_group(
     });
 }
 
-fn matches_common_lookup_parts(
+fn explain_common_lookup_parts(
     expected_scheme: Option<&str>,
     expected_port: Option<u16>,
     path_prefix: Option<&str>,
     lookup: &LookupContext<'_>,
-) -> bool {
+) -> Result<(), String> {
     if let Some(expected_scheme) = expected_scheme {
         if lookup.scheme != expected_scheme {
-            return false;
+            return Err(format!(
+                "scheme mismatch: expected `{expected_scheme}`, got `{}`",
+                lookup.scheme
+            ));
         }
     }
 
     if let Some(expected_port) = expected_port {
         if lookup.port != Some(expected_port) {
-            return false;
+            let actual_port = lookup
+                .port
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_string());
+            return Err(format!(
+                "port mismatch: expected `{expected_port}`, got `{actual_port}`"
+            ));
         }
     }
 
-    match path_prefix {
-        Some(path_prefix) => path_has_prefix(lookup.path, path_prefix),
-        None => true,
+    if let Some(path_prefix) = path_prefix {
+        if !path_has_prefix(lookup.path, path_prefix) {
+            return Err(format!(
+                "path prefix mismatch: expected prefix `{path_prefix}`, got `{}`",
+                lookup.path
+            ));
+        }
     }
+
+    Ok(())
 }
 
 fn resolve_path_suffix<'a>(path_prefix: Option<&str>, original_path: &'a str) -> &'a str {

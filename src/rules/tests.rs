@@ -561,3 +561,30 @@ fn explain_groups_candidates_by_priority_and_spread() {
         "reject"
     );
 }
+
+#[test]
+fn explain_includes_mismatch_reason_for_candidate() {
+    let rule_schema: Vec<RuleSchema> = serde_yaml::from_str(
+        r#"
+- match:
+    hosts:
+      - api.example.com
+      - files.example.com
+    scheme: https
+  action:
+    type: direct
+"#,
+    )
+    .unwrap();
+    let rules = RuleSet::try_from(rule_schema).unwrap();
+    let original = Url::parse("http://api.example.com/").unwrap();
+
+    let explanation = rules.explain(&original);
+    let candidate = &explanation.priority_groups[0].candidates[0];
+
+    assert_eq!(candidate.matched, Some(false));
+    assert_eq!(
+        candidate.mismatch_reason.as_deref(),
+        Some("scheme mismatch: expected `https`, got `http`")
+    );
+}
