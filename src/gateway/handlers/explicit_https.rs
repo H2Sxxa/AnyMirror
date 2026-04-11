@@ -6,11 +6,11 @@ use hyper::body::Incoming;
 use tracing::Instrument;
 
 use super::super::{
-    executors::UpstreamExecutor,
     forwarding::forward_intercepted_request,
-    request_parser::{ConnectAuthority, resolve_explicit_https_target},
-    router::{make_http_request_span, record_http_response_span},
+    http::request_parser::{ConnectAuthority, resolve_explicit_https_target},
+    routers::{make_http_request_span, record_http_response_span},
     state::AppState,
+    upstream::executors::UpstreamExecutor,
 };
 
 pub(crate) async fn handle_explicit_connect_https_request<E: UpstreamExecutor>(

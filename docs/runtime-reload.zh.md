@@ -70,5 +70,5 @@
 ## 相关文件
 
 - [`src/watch.rs`](../src/watch.rs)
-- [`src/proxy/runtime.rs`](../src/proxy/runtime.rs)
+- [`src/gateway/runtime.rs`](../src/gateway/runtime.rs)
 - [`src/supervisors`](../src/supervisors)

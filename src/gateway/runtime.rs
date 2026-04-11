@@ -20,12 +20,12 @@ use crate::watch::{ConfigReloadRequest, spawn_config_watch};
 use crate::workers::{ShutdownJoinHandle, Workers};
 
 use super::{
-    executors::HyperExecutor,
     handlers::{proxy_entry::proxy_entry, transparent::transparent_entry},
-    responses::shutdown_signal,
-    router::build_common_router,
+    http::responses::shutdown_signal,
+    routers::build_common_router,
     state::AppState,
-    tls::TlsInterceptService,
+    transport::tls::TlsInterceptService,
+    upstream::executors::HyperExecutor,
 };
 
 pub async fn serve_explicit(

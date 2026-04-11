@@ -1,11 +1,11 @@
 use axum::{body::Body, extract::State, http::HeaderValue, http::Request, response::Response};
 
 use super::super::{
-    executors::UpstreamExecutor,
     forwarding::forward_transparent_request,
-    request_parser::{ORIGINAL_SCHEME_HEADER, resolve_transparent_target},
+    http::request_parser::{ORIGINAL_SCHEME_HEADER, resolve_transparent_target},
     state::AppState,
-    tls::TlsIntercepted,
+    transport::tls::TlsIntercepted,
+    upstream::executors::UpstreamExecutor,
 };
 use super::common::reject_connect_request;
 

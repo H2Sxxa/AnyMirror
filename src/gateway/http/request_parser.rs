@@ -49,7 +49,7 @@ pub(crate) fn parse_absolute_url(raw_uri: &str) -> Result<Url, Response> {
     if !(raw_uri.starts_with("http://") || raw_uri.starts_with("https://")) {
         return Err(json_error(
             StatusCode::NOT_FOUND,
-            "unknown route, try /rewrite?url=<url> or /fetch?url=<url>",
+            "unknown route, try /tools/rewrite?url=<url> or /tools/fetch?url=<url>",
         ));
     }
 

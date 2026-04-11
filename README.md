@@ -233,9 +233,11 @@ For the full rule reference and internal rule-engine model, see [docs/rule-engin
 
 ## Debug Endpoints
 
-- `GET /state`: current in-memory runtime snapshot
-- `GET /events`: recent in-memory runtime events
+- `GET /observability/state`: current in-memory runtime snapshot
+- `GET /observability/events`: recent in-memory runtime events
 - `GET /rules/explain?url=<url>`: explain candidate rule evaluation by `priority`, config order, and `spread`
+- `GET /tools/rewrite?url=<url>`: inspect rewritten upstream targets
+- `GET /tools/fetch?url=<url>`: forward one URL through the current rule pipeline
 
 In explicit mode, clients should point both HTTP and HTTPS proxy settings at `listen` (for example `127.0.0.1:8787`). `tls_port` is only used by transparent mode.
 
@@ -246,7 +248,7 @@ In explicit mode, clients should point both HTTP and HTTPS proxy settings at `li
 - `backend.kind: tun` + `backend.tun.stack: smoltcp` is available as an experimental backend.
 - Explicit mode now supports HTTP proxying and HTTPS interception after `CONNECT`.
 - Structured rules, hot reload, upstream DNS controls, built-in `respond` actions, and the QuickJS plugin runtime are already part of the current runtime.
-- The observability subsystem now exposes in-memory runtime snapshots and recent events through `GET /state` and `GET /events`.
+- The observability subsystem now exposes in-memory runtime snapshots and recent events through `GET /observability/state` and `GET /observability/events`.
 
 ## Roadmap
 

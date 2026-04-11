@@ -6,8 +6,9 @@ use axum::{
 };
 
 use super::super::{
-    executors::UpstreamExecutor, request_parser::parse_request_url, responses::RewriteQuery,
+    http::{request_parser::parse_request_url, responses::RewriteQuery},
     state::AppState,
+    upstream::executors::UpstreamExecutor,
 };
 use super::common::forward_standard_request;
 

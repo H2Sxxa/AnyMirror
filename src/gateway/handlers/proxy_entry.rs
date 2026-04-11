@@ -15,11 +15,11 @@ use tokio::net::TcpStream;
 use tracing::Instrument;
 
 use super::super::{
-    executors::UpstreamExecutor,
     handlers::explicit_https::handle_explicit_connect_https_request,
-    request_parser::{ConnectAuthority, parse_absolute_url, parse_connect_authority},
+    http::request_parser::{ConnectAuthority, parse_absolute_url, parse_connect_authority},
     state::AppState,
-    tls,
+    transport::tls,
+    upstream::executors::UpstreamExecutor,
 };
 use super::common::forward_explicit_request;
 

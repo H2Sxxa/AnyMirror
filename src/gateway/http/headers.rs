@@ -6,7 +6,7 @@ use axum::http::{
     },
 };
 
-pub(super) fn is_end_to_end_header(name: &HeaderName) -> bool {
+pub(crate) fn is_end_to_end_header(name: &HeaderName) -> bool {
     *name != HOST
         && *name != CONNECTION
         && *name != HeaderName::from_static("keep-alive")

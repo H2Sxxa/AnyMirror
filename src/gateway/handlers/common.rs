@@ -6,8 +6,8 @@ use axum::{
 use url::Url;
 
 use super::super::{
-    executors::UpstreamExecutor, forwarding::forward_request, responses::json_error,
-    state::AppState,
+    forwarding::forward_request, http::responses::json_error, state::AppState,
+    upstream::executors::UpstreamExecutor,
 };
 
 pub(super) fn reject_connect_request(

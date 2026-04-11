@@ -1,7 +1,7 @@
 use axum::{Json, extract::State, response::IntoResponse};
 use serde::Serialize;
 
-use super::super::{executors::UpstreamExecutor, state::AppState};
+use super::super::{state::AppState, upstream::executors::UpstreamExecutor};
 use crate::observability::{ObservabilityEvent, RuntimeSnapshot};
 
 #[derive(Debug, Serialize)]

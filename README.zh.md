@@ -230,9 +230,11 @@ AnyMirror 使用结构化的 `match + action` 规则。
 
 ## 调试接口
 
-- `GET /state`：当前进程内运行时快照
-- `GET /events`：最近的进程内运行时事件
+- `GET /observability/state`：当前进程内运行时快照
+- `GET /observability/events`：最近的进程内运行时事件
 - `GET /rules/explain?url=<url>`：按 `priority`、配置顺序和 `spread` 解释候选规则的求值过程
+- `GET /tools/rewrite?url=<url>`：查看规则改写后的 upstream 目标
+- `GET /tools/fetch?url=<url>`：通过当前规则链转发一个 URL
 
 在显式代理模式下，客户端的 HTTP/HTTPS 代理都只需要指向 `listen`（例如 `127.0.0.1:8787`）。`tls_port` 只用于透明模式。
 
@@ -243,7 +245,7 @@ AnyMirror 使用结构化的 `match + action` 规则。
 - `backend.kind: tun` + `backend.tun.stack: smoltcp` 已可用，但仍属于实验性后端。
 - 显式模式现在已经支持 HTTP 代理，以及 `CONNECT` 之后的 HTTPS 拦截。
 - 结构化规则、运行时热重载、upstream DNS 控制、内建 `respond` 动作，以及 QuickJS 插件运行时都已经进入当前 runtime。
-- 可观测子系统已经通过 `GET /state` 和 `GET /events` 暴露进程内运行时快照与最近事件。
+- 可观测子系统已经通过 `GET /observability/state` 和 `GET /observability/events` 暴露进程内运行时快照与最近事件。
 
 ## 开发计划
 

@@ -19,7 +19,7 @@
                                  v
 +-----------------------------------------------------------+
 |                    Transparent Runtime                    |
-|             proxy::runtime::serve_transparent             |
+|            gateway::runtime::serve_transparent            |
 +----------------------+----------------+-------------------+
                        |                |
                        |                |

@@ -4,7 +4,7 @@ use crate::rules::pool::MatchedRule;
 
 use super::{headers::is_end_to_end_header, responses::rule_kind_name};
 
-pub(super) fn build_proxy_response(
+pub(crate) fn build_proxy_response(
     upstream: hyper::Response<hyper::body::Incoming>,
     matched: MatchedRule<'_>,
     source: Option<&str>,
@@ -18,7 +18,7 @@ pub(super) fn build_proxy_response(
     build_upstream_response(upstream, source, Some(&target), Some(rule_kind))
 }
 
-pub(super) fn build_passthrough_response(
+pub(crate) fn build_passthrough_response(
     upstream: hyper::Response<hyper::body::Incoming>,
     source: Option<&str>,
     target: &str,

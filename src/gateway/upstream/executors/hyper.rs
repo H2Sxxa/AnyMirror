@@ -24,8 +24,8 @@ use tracing::{Instrument, Span, field};
 
 use crate::rules::model::UpstreamPlan;
 
-use super::super::{headers::is_end_to_end_header, resolver::CustomResolver};
 use super::{ExecutedUpstream, UpstreamExecutor};
+use crate::gateway::{http::headers::is_end_to_end_header, upstream::resolver::CustomResolver};
 
 type PooledHttp1Client = Client<PooledTransportConnector, Body>;
 type UpstreamTlsStream = tokio_rustls::client::TlsStream<TcpStream>;

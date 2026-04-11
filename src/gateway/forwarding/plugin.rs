@@ -13,9 +13,9 @@ use tracing::{Instrument, Span, field};
 use url::Url;
 
 use super::super::{
-    executors::UpstreamExecutor,
-    responses::{json_error, reject_response},
+    http::responses::{json_error, reject_response},
     state::AppState,
+    upstream::executors::UpstreamExecutor,
 };
 use crate::plugins::{
     PluginBodyInput, PluginHeaderInput, PluginHeaderPatch, PluginMatchAction, PluginMatchContext,

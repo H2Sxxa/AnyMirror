@@ -9,10 +9,14 @@ use tracing::{Instrument, Span, field};
 use url::Url;
 
 use super::{
-    executors::UpstreamExecutor,
-    proxy_response::{build_passthrough_response, build_proxy_response},
-    responses::{json_error, reject_response, respond_response, rule_action_name, rule_kind_name},
+    http::{
+        proxy_response::{build_passthrough_response, build_proxy_response},
+        responses::{
+            json_error, reject_response, respond_response, rule_action_name, rule_kind_name,
+        },
+    },
     state::AppState,
+    upstream::executors::UpstreamExecutor,
 };
 use crate::rules::model::{RuleActionKind, UpstreamPlan};
 

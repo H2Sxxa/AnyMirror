@@ -1,7 +1,7 @@
 mod config;
+mod gateway;
 pub mod observability;
 mod plugins;
-mod proxy;
 mod rules;
 mod socket;
 mod supervisors;
@@ -72,9 +72,9 @@ async fn main() -> Result<()> {
     let watch_config_path = cli.watch_config.then_some(config_path.clone());
 
     let result = match cli.mode {
-        ServerMode::Explicit => proxy::serve_explicit(config, watch_config_path, workers).await,
+        ServerMode::Explicit => gateway::serve_explicit(config, watch_config_path, workers).await,
         ServerMode::Transparent => {
-            proxy::serve_transparent(config, watch_config_path, workers).await
+            gateway::serve_transparent(config, watch_config_path, workers).await
         }
     };
 

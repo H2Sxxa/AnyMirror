@@ -1,5 +1,5 @@
-use super::executors::UpstreamExecutor;
-use super::tls::TlsInterceptService;
+use super::transport::tls::TlsInterceptService;
+use super::upstream::executors::UpstreamExecutor;
 use crate::observability::ObservabilityRuntime;
 use crate::plugins::LivePluginRegistry;
 use crate::rules::pool::LiveRuleSet;

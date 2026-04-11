@@ -5,7 +5,7 @@ use axum::{Router, serve};
 use tokio::{net::TcpListener, sync::oneshot};
 
 use crate::{
-    proxy::tls::{self, TlsInterceptService},
+    gateway::transport::tls::{self, TlsInterceptService},
     socket::bind_dual_stack_tcp_listener,
     workers::Workers,
 };

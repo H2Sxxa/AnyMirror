@@ -19,7 +19,7 @@ This document explains the current transparent-mode architecture of AnyMirror.
                                  v
 +-----------------------------------------------------------+
 |                    Transparent Runtime                    |
-|             proxy::runtime::serve_transparent             |
+|            gateway::runtime::serve_transparent            |
 +----------------------+----------------+-------------------+
                        |                |
                        |                |
