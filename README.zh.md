@@ -322,6 +322,16 @@ includes:
       message: blocked by policy
 
   - match:
+      exact: https://api.example.com/health
+    action:
+      type: respond
+      status: 200
+      body:
+        json:
+          ok: true
+          source: anymirror
+
+  - match:
       ip: 203.0.113.10
     action:
       type: direct
@@ -360,6 +370,18 @@ includes:
 - `action.type: direct`：保留原始目标并直接转发
 - `action.type: respond`：本地直接返回静态响应，不再访问 upstream
 - `action.type: reject`：本地直接返回拒绝响应，不再访问 upstream
+
+`action.type: respond` 当前支持：
+
+- `status`
+- `headers`
+- `content_type`
+- `body.text`
+- `body.json`
+- `body.base64`
+- `body.file`
+
+当 `body.file` 使用相对路径时，会按配置文件所在目录解析。
 
 ## 架构设计
 当前透明代理主链路可以概括成：

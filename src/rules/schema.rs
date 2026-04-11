@@ -52,6 +52,7 @@ pub struct RespondBodySchema {
     pub text: Option<String>,
     pub json: Option<serde_json::Value>,
     pub base64: Option<String>,
+    pub file: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

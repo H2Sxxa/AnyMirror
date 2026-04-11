@@ -74,7 +74,7 @@ pub(crate) async fn forward_request<E: UpstreamExecutor>(
                         respond_status = respond.status,
                         "{message}"
                     );
-                    return respond_response(respond);
+                    return respond_response(respond).await;
                 }
                 if let Some(plugin_name) = matched.plugin() {
                     Span::current().record("plugin", plugin_name);
@@ -230,7 +230,7 @@ pub(crate) async fn forward_intercepted_request<E: UpstreamExecutor>(
                         respond_status = respond.status,
                         "{message}"
                     );
-                    return respond_response(respond);
+                    return respond_response(respond).await;
                 }
                 if let Some(plugin_name) = matched.plugin() {
                     Span::current().record("plugin", plugin_name);

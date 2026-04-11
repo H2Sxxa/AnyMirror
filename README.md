@@ -328,6 +328,16 @@ includes:
       message: blocked by policy
 
   - match:
+      exact: https://api.example.com/health
+    action:
+      type: respond
+      status: 200
+      body:
+        json:
+          ok: true
+          source: anymirror
+
+  - match:
       ip: 203.0.113.10
     action:
       type: direct
@@ -366,6 +376,18 @@ Structured actions:
 - `action.type: direct`: Keep the original destination and forward directly
 - `action.type: respond`: Return a local static response without contacting the upstream
 - `action.type: reject`: Return a local reject response without contacting the upstream
+
+`action.type: respond` currently supports:
+
+- `status`
+- `headers`
+- `content_type`
+- `body.text`
+- `body.json`
+- `body.base64`
+- `body.file`
+
+`body.file` is resolved relative to the config file directory when a relative path is used.
 
 ## Architecture
 The current transparent pipeline is:

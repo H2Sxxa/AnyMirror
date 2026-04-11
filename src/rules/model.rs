@@ -1,6 +1,7 @@
 use axum::http::HeaderMap;
 use bytes::Bytes;
 use std::net::IpAddr;
+use std::path::PathBuf;
 
 use ipnet::IpNet;
 use serde::Deserialize;
@@ -103,7 +104,13 @@ pub struct RejectRuleAction {
 pub struct RespondRuleAction {
     pub status: u16,
     pub headers: HeaderMap,
-    pub body: Bytes,
+    pub body: RespondBodySource,
+}
+
+#[derive(Debug, Clone)]
+pub enum RespondBodySource {
+    Inline(Bytes),
+    File(PathBuf),
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]

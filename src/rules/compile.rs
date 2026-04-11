@@ -1,3 +1,6 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+
 use anyhow::{Context, Result, ensure};
 use axum::http::{
     HeaderMap, HeaderName, HeaderValue,
@@ -13,7 +16,7 @@ use super::matching::{
 };
 use super::model::{
     DnsMode, DnsPlan, HostPattern, HostRuleMatcher, IpPattern, IpRuleMatcher, RejectRuleAction,
-    RespondRuleAction, Rule, RuleAction, RuleMatcher, UpstreamPlan,
+    RespondBodySource, RespondRuleAction, Rule, RuleAction, RuleMatcher, UpstreamPlan,
 };
 use super::pool::RuleSet;
 use super::schema::{
@@ -285,34 +288,35 @@ fn compile_respond_action(
     Ok(RespondRuleAction {
         status,
         headers: compiled_headers,
-        body: compiled_body.bytes,
+        body: compiled_body.source,
     })
 }
 
 struct CompiledRespondBody {
-    bytes: Bytes,
+    source: RespondBodySource,
     default_content_type: Option<&'static str>,
 }
 
 fn compile_respond_body(body: Option<RespondBodySchema>) -> Result<CompiledRespondBody> {
     let Some(body) = body else {
         return Ok(CompiledRespondBody {
-            bytes: Bytes::new(),
+            source: RespondBodySource::Inline(Bytes::new()),
             default_content_type: None,
         });
     };
 
     let source_count = usize::from(body.text.is_some())
         + usize::from(body.json.is_some())
-        + usize::from(body.base64.is_some());
+        + usize::from(body.base64.is_some())
+        + usize::from(body.file.is_some());
     ensure!(
         source_count == 1,
-        "respond.body must contain exactly one of text, json, or base64"
+        "respond.body must contain exactly one of text, json, base64, or file"
     );
 
     if let Some(text) = body.text {
         return Ok(CompiledRespondBody {
-            bytes: Bytes::from(text.into_bytes()),
+            source: RespondBodySource::Inline(Bytes::from(text.into_bytes())),
             default_content_type: Some("text/plain; charset=utf-8"),
         });
     }
@@ -320,8 +324,26 @@ fn compile_respond_body(body: Option<RespondBodySchema>) -> Result<CompiledRespo
     if let Some(json) = body.json {
         let bytes = serde_json::to_vec(&json).context("failed to serialize respond.body.json")?;
         return Ok(CompiledRespondBody {
-            bytes: Bytes::from(bytes),
+            source: RespondBodySource::Inline(Bytes::from(bytes)),
             default_content_type: Some("application/json"),
+        });
+    }
+
+    if let Some(file) = body.file {
+        let trimmed = file.trim();
+        ensure!(!trimmed.is_empty(), "respond.body.file must not be empty");
+        let path = PathBuf::from(trimmed);
+        let metadata = fs::metadata(&path)
+            .with_context(|| format!("failed to read respond.body.file `{}`", path.display()))?;
+        ensure!(
+            metadata.is_file(),
+            "respond.body.file `{}` must point to a regular file",
+            path.display()
+        );
+
+        return Ok(CompiledRespondBody {
+            source: RespondBodySource::File(path.clone()),
+            default_content_type: infer_file_content_type(&path),
         });
     }
 
@@ -333,9 +355,13 @@ fn compile_respond_body(body: Option<RespondBodySchema>) -> Result<CompiledRespo
         .context("failed to decode respond.body.base64")?;
 
     Ok(CompiledRespondBody {
-        bytes: Bytes::from(decoded),
+        source: RespondBodySource::Inline(Bytes::from(decoded)),
         default_content_type: Some("application/octet-stream"),
     })
+}
+
+fn infer_file_content_type(path: &Path) -> Option<&'static str> {
+    mime_guess::from_path(path).first_raw()
 }
 
 impl TryFrom<DnsPlanSchema> for DnsPlan {

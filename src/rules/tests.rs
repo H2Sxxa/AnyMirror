@@ -1,9 +1,11 @@
 use axum::http::header::CONTENT_TYPE;
+use std::fs;
+use std::time::{SystemTime, UNIX_EPOCH};
 use url::Url;
 
 use crate::rules::model::{
-    HostPattern, HostRuleMatcher, Rule, RuleAction, RuleActionKind, RuleKind, RuleMatcher,
-    UpstreamPlan,
+    HostPattern, HostRuleMatcher, RespondBodySource, Rule, RuleAction, RuleActionKind, RuleKind,
+    RuleMatcher, UpstreamPlan,
 };
 use crate::rules::pool::RuleSet;
 use crate::rules::schema::RuleSchema;
@@ -254,7 +256,10 @@ action:
         respond.headers.get(CONTENT_TYPE).unwrap(),
         "application/json"
     );
-    assert_eq!(respond.body.as_ref(), br#"{"ok":true}"#);
+    match &respond.body {
+        RespondBodySource::Inline(body) => assert_eq!(body.as_ref(), br#"{"ok":true}"#),
+        RespondBodySource::File(_) => panic!("expected inline respond body"),
+    }
 }
 
 #[test]
@@ -277,8 +282,42 @@ action:
     assert!(
         error
             .to_string()
-            .contains("respond.body must contain exactly one of text, json, or base64")
+            .contains("respond.body must contain exactly one of text, json, base64, or file")
     );
+}
+
+#[test]
+fn respond_action_accepts_body_file() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("anymirror-respond-{suffix}.txt"));
+    fs::write(&path, "hello file").unwrap();
+
+    let yaml = format!(
+        r#"
+match:
+  host: api.example.com
+action:
+  type: respond
+  body:
+    file: {}
+"#,
+        path.to_string_lossy()
+    );
+    let rule_schema: RuleSchema = serde_yaml::from_str(&yaml).unwrap();
+    let rules = RuleSet::try_from(vec![rule_schema]).unwrap();
+    let original = Url::parse("https://api.example.com/file").unwrap();
+
+    let resolved = rules.resolve(&original).unwrap();
+    let respond = resolved.respond().unwrap();
+    match &respond.body {
+        RespondBodySource::File(file) => assert_eq!(file, &path),
+        RespondBodySource::Inline(_) => panic!("expected file-backed respond body"),
+    }
+
+    fs::remove_file(path).unwrap();
 }
 
 #[test]

@@ -11,7 +11,7 @@ use ipnet::{Ipv4Net, Ipv6Net};
 use serde::{Deserialize, Serialize};
 
 use crate::rules::pool::RuleSet;
-use crate::rules::schema::{RuleActionSchema, RuleMatcherSchema, RuleSchema};
+use crate::rules::schema::{RespondBodySchema, RuleActionSchema, RuleMatcherSchema, RuleSchema};
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -334,6 +334,7 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<AppConfig> {
         PluginRuntimeOptions::from_raw(parsed.plugins, config_dir)?;
     let mut rule_schemas = parsed.includes;
     rule_schemas.extend(implicit_plugin_rules);
+    resolve_rule_body_file_paths(&mut rule_schemas, config_dir)?;
     let rules = RuleSet::try_from(rule_schemas)?;
 
     if rules.is_empty() {
@@ -781,14 +782,56 @@ fn resolve_plugin_root(base_dir: &Path, root: &str) -> PathBuf {
     }
 }
 
+fn resolve_rule_body_file_paths(rule_schemas: &mut [RuleSchema], base_dir: &Path) -> Result<()> {
+    for rule in rule_schemas {
+        if let RuleActionSchema::Respond {
+            body: Some(body), ..
+        } = &mut rule.action
+        {
+            resolve_respond_body_file_path(body, base_dir)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn resolve_respond_body_file_path(body: &mut RespondBodySchema, base_dir: &Path) -> Result<()> {
+    let Some(file) = body.file.as_mut() else {
+        return Ok(());
+    };
+
+    let trimmed = file.trim();
+    if trimmed.is_empty() {
+        bail!("respond.body.file must not be empty");
+    }
+
+    let resolved = resolve_rule_asset_path(base_dir, trimmed);
+    *file = resolved.to_string_lossy().to_string();
+    Ok(())
+}
+
+fn resolve_rule_asset_path(base_dir: &Path, file: &str) -> PathBuf {
+    let file_path = PathBuf::from(file);
+    if file_path.is_absolute() {
+        file_path
+    } else {
+        base_dir.join(file_path)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use super::{
         PluginPermissions, RawPluginPermissions, RawPluginStagePermissions, TunDnsHijackTarget,
-        TunDnsHijackTransport, parse_tun_dns_hijack_spec, resolve_plugin_root,
+        TunDnsHijackTransport, load_config, parse_tun_dns_hijack_spec, resolve_plugin_root,
     };
+    use crate::rules::model::RespondBodySource;
 
     #[test]
     fn parses_default_udp_dns_hijack_rule() {
@@ -842,5 +885,72 @@ mod tests {
                 on_response_body: true,
             }
         );
+    }
+
+    #[test]
+    fn resolves_respond_body_file_relative_to_config_directory() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base_dir = std::env::temp_dir().join(format!("anymirror-config-{suffix}"));
+        let mock_dir = base_dir.join("mocks");
+        fs::create_dir_all(&mock_dir).unwrap();
+
+        let body_path = mock_dir.join("health.json");
+        fs::write(&body_path, r#"{"ok":true}"#).unwrap();
+
+        let config_path = base_dir.join("config.yml");
+        fs::write(
+            &config_path,
+            r#"
+listen: 127.0.0.1:8787
+observability:
+  enable: false
+backend:
+  kind: windivert
+  dns:
+    listen: 127.0.0.1:15353
+    fake_ipv4_range: 198.18.0.0/16
+    fake_ipv6_range: fd00:198:18::/48
+    record_ttl_secs: 60
+  windivert:
+    layer: network
+  tun:
+    name: anymirror-tun
+    mtu: 1500
+    stack: smoltcp
+    platform_dns: auto
+    dns_hijack:
+      - any:53
+      - tcp://any:53
+plugins:
+  enabled: false
+  workers: 1
+  includes: []
+includes:
+  - match:
+      exact: https://api.example.com/health
+    action:
+      type: respond
+      body:
+        file: ./mocks/health.json
+"#,
+        )
+        .unwrap();
+
+        let config = load_config(&config_path).unwrap();
+        let original = url::Url::parse("https://api.example.com/health").unwrap();
+        let resolved = config.rules.resolve(&original).unwrap();
+
+        match &resolved.respond().unwrap().body {
+            RespondBodySource::File(path) => assert_eq!(path, &body_path),
+            RespondBodySource::Inline(_) => panic!("expected file-backed respond body"),
+        }
+
+        fs::remove_file(config_path).unwrap();
+        fs::remove_file(body_path).unwrap();
+        fs::remove_dir(mock_dir).unwrap();
+        fs::remove_dir(base_dir).unwrap();
     }
 }

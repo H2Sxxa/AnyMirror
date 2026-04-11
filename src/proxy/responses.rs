@@ -4,10 +4,11 @@ use axum::{
     http::{HeaderValue, StatusCode, header::CONTENT_LENGTH},
     response::{IntoResponse, Response},
 };
+use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use tokio::signal;
 
-use crate::rules::model::{RespondRuleAction, RuleActionKind, RuleKind};
+use crate::rules::model::{RespondBodySource, RespondRuleAction, RuleActionKind, RuleKind};
 use crate::rules::pool::MatchedRule;
 
 #[derive(Debug, Deserialize)]
@@ -60,8 +61,17 @@ pub(crate) fn rule_action_name(matched: MatchedRule<'_>) -> &'static str {
     }
 }
 
-pub(crate) fn respond_response(action: &RespondRuleAction) -> Response {
+pub(crate) async fn respond_response(action: &RespondRuleAction) -> Response {
     let status = StatusCode::from_u16(action.status).expect("validated respond status");
+    let body = match load_respond_body(action).await {
+        Ok(body) => body,
+        Err(error) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to read respond body: {error}"),
+            );
+        }
+    };
     let mut response = Response::builder().status(status);
     let response_headers = response.headers_mut().expect("response builder is valid");
 
@@ -71,13 +81,20 @@ pub(crate) fn respond_response(action: &RespondRuleAction) -> Response {
 
     response_headers.insert(
         CONTENT_LENGTH,
-        HeaderValue::from_str(&action.body.len().to_string())
+        HeaderValue::from_str(&body.len().to_string())
             .expect("response content length should be valid"),
     );
 
     response
-        .body(Body::from(action.body.clone()))
+        .body(Body::from(body))
         .expect("response body build should not fail")
+}
+
+async fn load_respond_body(action: &RespondRuleAction) -> std::io::Result<Bytes> {
+    match &action.body {
+        RespondBodySource::Inline(bytes) => Ok(bytes.clone()),
+        RespondBodySource::File(path) => tokio::fs::read(path).await.map(Bytes::from),
+    }
 }
 
 pub(crate) fn reject_response(status: u16, message: &str) -> Response {
