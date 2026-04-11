@@ -2,6 +2,7 @@
 *.crt
 *.key
 /*.yml
+!config.example.yml
 *.dll
 *.lib
 *.sys

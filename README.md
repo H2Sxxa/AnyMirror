@@ -55,7 +55,7 @@ This approach stays transparent to applications while avoiding the classic "same
 For normal usage, start from the latest GitHub release instead of building from source:
 
 - Download the latest package from [GitHub Releases](https://github.com/H2Sxxa/AnyMirror/releases/latest)
-- Linux and macOS packages include the `anymirror` binary, `README`, `README.zh`, `LICENSE`, and `config.yml`
+- Linux and macOS packages include the `anymirror` binary, `README`, `README.zh`, `LICENSE`, and `config.example.yml`
 - The Windows package also includes `WinDivert.dll` and `WinDivert64.sys` for the WinDivert transparent backend
 - If you plan to use the TUN backend on Windows, you still need to provide `wintun.dll` separately
 
@@ -151,7 +151,7 @@ Inside transparent mode, WinDivert still supports these layers:
 
 ## Configuration
 
-Create a `config.yml` file with your redirection rules:
+Start from `config.example.yml`, then copy it to `config.yml` and adjust it for your environment:
 
 ```yaml
 listen: 127.0.0.1:8787
@@ -179,40 +179,42 @@ observability:
     service_name: anymirror
     otlp_endpoint: http://127.0.0.1:4317   # Jaeger / OTel Collector OTLP gRPC endpoint
 
+plugins:
+  enabled: false
+  workers: 4
+
 includes:
   - match:
-      prefix: https://libraries.minecraft.net/
+      prefix: https://downloads.example.com/packages/
     action:
       type: mirror
       upstream:
-        url: https://bmclapi2.bangbang93.com/maven/
+        url: https://mirror.example.net/packages/
 
   - match:
-      host: resources.download.minecraft.net
+      hosts:
+        - api.example.com
+        - files.example.com
+      scheme: https
     action:
-      type: mirror
-      upstream:
-        url: https://bmclapi2.bangbang93.com/assets/
+      type: direct
 
   - match:
-      exact: https://maven.minecraftforge.net
+      exact: https://api.example.com/health
     action:
-      type: mirror
-      upstream:
-        url: https://bmclapi2.bangbang93.com/maven
+      type: respond
+      status: 200
+      body:
+        json:
+          ok: true
+          source: anymirror
 
   - match:
-      exact: https://example.com/api
+      host: telemetry.example.com
     action:
-      type: mirror
-      upstream:
-        url: https://api.backend.local
-        connect_ip: 10.0.0.5
-        connect_host: api.internal.local
-        sni: backend.local
-        dns:
-          mode: doh
-          server: https://dns.google/dns-query
+      type: reject
+      status: 451
+      message: blocked by policy
 ```
 
 For the full configuration reference, see [docs/configuration.md](docs/configuration.md).

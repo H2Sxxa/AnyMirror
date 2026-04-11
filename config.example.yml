@@ -1,0 +1,62 @@
+listen: 127.0.0.1:8787
+
+backend:
+  kind: windivert
+  dns:
+    listen: 127.0.0.1:53
+    fake_ipv4_range: 198.18.0.0/16
+    fake_ipv6_range: fd00:198:18::/48
+    record_ttl_secs: 60
+  windivert:
+    layer: network
+  tun:
+    name: anymirror-tun
+    mtu: 1500
+    stack: smoltcp
+    platform_dns: auto
+    dns_hijack:
+      - any:53
+      - tcp://any:53
+
+observability:
+  enable: false
+  telemetry:
+    service_name: anymirror
+    otlp_endpoint: http://127.0.0.1:4317
+
+plugins:
+  enabled: false
+  workers: 4
+
+includes:
+  - match:
+      prefix: https://downloads.example.com/packages/
+    action:
+      type: mirror
+      upstream:
+        url: https://mirror.example.net/packages/
+
+  - match:
+      hosts:
+        - api.example.com
+        - files.example.com
+      scheme: https
+    action:
+      type: direct
+
+  - match:
+      exact: https://api.example.com/health
+    action:
+      type: respond
+      status: 200
+      body:
+        json:
+          ok: true
+          source: anymirror
+
+  - match:
+      host: telemetry.example.com
+    action:
+      type: reject
+      status: 451
+      message: blocked by policy

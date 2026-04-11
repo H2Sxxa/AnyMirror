@@ -55,7 +55,7 @@ AnyMirror 现在采用基于 fake-ip 的透明代理链路：
 正常使用时，建议优先从最新 GitHub Release 下载，而不是自己从源码构建：
 
 - 从 [GitHub Releases](https://github.com/H2Sxxa/AnyMirror/releases/latest) 下载最新包
-- Linux 和 macOS 包会包含 `anymirror` 二进制、`README`、`README.zh`、`LICENSE` 和 `config.yml`
+- Linux 和 macOS 包会包含 `anymirror` 二进制、`README`、`README.zh`、`LICENSE` 和 `config.example.yml`
 - Windows 包还会额外包含 WinDivert 透明后端所需的 `WinDivert.dll` 和 `WinDivert64.sys`
 - 如果你准备在 Windows 上使用 TUN 后端，仍然需要另外提供 `wintun.dll`
 
@@ -148,7 +148,7 @@ anymirror --mode transparent --config config.yml
 
 ## 配置文件
 
-创建 `config.yml` 文件并编写重定向规则：
+建议先从 `config.example.yml` 开始，再复制成 `config.yml` 并按你的环境修改：
 
 ```yaml
 listen: 127.0.0.1:8787
@@ -176,40 +176,42 @@ observability:
     service_name: anymirror
     otlp_endpoint: http://127.0.0.1:4317   # 指向 Jaeger / OTel Collector OTLP gRPC
 
+plugins:
+  enabled: false
+  workers: 4
+
 includes:
   - match:
-      prefix: https://libraries.minecraft.net/
+      prefix: https://downloads.example.com/packages/
     action:
       type: mirror
       upstream:
-        url: https://bmclapi2.bangbang93.com/maven/
+        url: https://mirror.example.net/packages/
 
   - match:
-      host: resources.download.minecraft.net
+      hosts:
+        - api.example.com
+        - files.example.com
+      scheme: https
     action:
-      type: mirror
-      upstream:
-        url: https://bmclapi2.bangbang93.com/assets/
+      type: direct
 
   - match:
-      exact: https://maven.minecraftforge.net
+      exact: https://api.example.com/health
     action:
-      type: mirror
-      upstream:
-        url: https://bmclapi2.bangbang93.com/maven
+      type: respond
+      status: 200
+      body:
+        json:
+          ok: true
+          source: anymirror
 
   - match:
-      exact: https://example.com/api
+      host: telemetry.example.com
     action:
-      type: mirror
-      upstream:
-        url: https://api.backend.local
-        connect_ip: 10.0.0.5
-        connect_host: api.internal.local
-        sni: backend.local
-        dns:
-          mode: doh
-          server: https://dns.google/dns-query
+      type: reject
+      status: 451
+      message: blocked by policy
 ```
 
 完整的配置字段参考见 [docs/configuration.zh.md](docs/configuration.zh.md)。
