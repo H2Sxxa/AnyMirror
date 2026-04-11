@@ -110,7 +110,8 @@ host
 - 精确匹配桶使用 boxed slice，而不是可增长 `Vec`。
 - host 后缀匹配和 DNS 后缀匹配共用一棵 trie。
 - prefix、host suffix、CIDR trie 都保存 `min_rule_index`，可以提前剪枝。
-- 规则顺序仍然有效，配置里越靠前优先级越高。
+- 候选规则会先统一收集，再按 `priority` 从高到低求值。
+- 同一个优先级内，配置里越靠前仍然越优先。
 
 ## 当前规则语义
 
@@ -128,9 +129,27 @@ host
 
 - `mirror`
 - `direct`
+- `respond`
+- `plugin`
 - `reject`
 
 说明：
 
 - `ip` 和 `ip_cidr` 只匹配 URL host 本身就是字面量 IP 的请求。
 - 规则匹配阶段不会先把域名解析成真实 IP 再匹配。
+- `priority` 是可选字段。它支持 `xhigh`、`high`、`medium`、`low`、`xlow`
+  这些语义级别，也支持数字。
+- 内建语义级别对应：
+  - `xhigh = 200`
+  - `high = 100`
+  - `medium = 0`
+  - `low = -100`
+  - `xlow = -200`
+- 规则会先按 `priority` 从高到低求值。
+- 同一个优先级内，仍然以最先命中的规则为准。
+- `spread: true` 表示当前优先级的赢家可以继续向更低优先级传播。
+- `respond` 当前支持：
+  - `body.text`
+  - `body.json`
+  - `body.base64`
+  - `body.file`

@@ -39,7 +39,7 @@ This approach stays transparent to applications while avoiding the classic "same
   - Administrator/root privileges or equivalent permission to create interception/TUN resources
   - `backend.kind: windivert`
     - Windows 10 or later
-    - WinDivert runtime files available beside the executable
+    - WinDivert runtime files available beside the executable; the official Windows release package already bundles `WinDivert.dll` and `WinDivert64.sys`
   - `backend.kind: tun` + `backend.tun.stack: smoltcp`
     - A desktop OS with TUN support
     - Windows requires `wintun.dll` beside the executable
@@ -47,7 +47,16 @@ This approach stays transparent to applications while avoiding the classic "same
 
 ## Installation & Setup
 
-### 1. Install WinDivert Driver
+### 1. Download A Release Build
+
+For normal usage, start from the latest GitHub release instead of building from source:
+
+- Download the latest package from [GitHub Releases](https://github.com/H2Sxxa/AnyMirror/releases/latest)
+- Linux and macOS packages include the `anymirror` binary, `README`, `README.zh`, `LICENSE`, and `config.yml`
+- The Windows package also includes `WinDivert.dll` and `WinDivert64.sys` for the WinDivert transparent backend
+- If you plan to use the TUN backend on Windows, you still need to provide `wintun.dll` separately
+
+### 2. Install WinDivert Driver
 
 The transparent proxy mode requires the WinDivert driver. Download and install it:
 
@@ -59,7 +68,9 @@ The transparent proxy mode requires the WinDivert driver. Download and install i
 
 **Note:** Keep the runtime files beside the executable. If you build from source, keep `WinDivert.lib` available for linking as well.
 
-### 2. Install Wintun For The TUN Backend
+**Note:** You can skip this step when using the official Windows release package unless you want to replace the bundled WinDivert runtime files yourself.
+
+### 3. Install Wintun For The TUN Backend
 
 If you run transparent mode with `backend.kind: tun` on Windows, download `wintun.dll` from the
 [official Wintun site](https://wintun.net/) and place it beside the executable.
@@ -67,7 +78,7 @@ If you run transparent mode with `backend.kind: tun` on Windows, download `wintu
 **Note:** This requirement applies to the TUN backend on Windows. The WinDivert backend does not
 use `wintun.dll`.
 
-### 3. Trust the TLS Certificate
+### 4. Trust the TLS Certificate
 
 When AnyMirror intercepts HTTPS traffic, it re-encrypts that traffic with a self-signed
 certificate authority. This applies to transparent HTTPS interception and to explicit-mode HTTPS
@@ -201,239 +212,27 @@ includes:
           server: https://dns.google/dns-query
 ```
 
-### Configuration Fields
+For the full configuration reference, see [docs/configuration.md](docs/configuration.md).
 
-- **listen:** Server address and port to bind to (e.g., `127.0.0.1:8787`)
-- **tls_port** (optional): Custom local TLS interception port used by transparent mode. If not specified, it defaults to `listen_port + 1`. For example, if `listen` is `127.0.0.1:8787`, the transparent HTTPS interception port will be `8788` unless overridden here.
-- **backend.kind**: Transparent intercept backend selector. If omitted, it defaults to `windivert` on Windows and `tun` on non-Windows platforms. Use `windivert` for the mature Windows backend, or `tun` for the experimental TUN backend.
-- **backend.dns.listen**: Local fake-ip DNS server address. This is the local fake DNS listener used by WinDivert and by any setup that still wants a localhost fake DNS service. The `tun + smoltcp` backend currently handles DNS in-tunnel and does not start this local listener runtime.
-- **backend.dns.fake_ipv4_range**: IPv4 fake-ip pool used for transparent redirection. WinDivert only intercepts TCP connections whose destination falls inside this range.
-- **backend.dns.fake_ipv6_range**: IPv6 fake-ip pool used for transparent redirection. WinDivert also intercepts TCP connections whose destination falls inside this range.
-- **backend.dns.record_ttl_secs**: TTL used for generated fake A and AAAA records.
-- **backend.windivert.layer**: WinDivert capture layer used in transparent mode. Use `network` for local traffic and `network-forward` for forwarded traffic such as WSL, VMs, or gateway scenarios.
-- **backend.tun.name**: TUN device name used by the TUN backend.
-- **backend.tun.mtu**: TUN MTU used by the TUN backend.
-- **backend.tun.stack**: TUN stack selector. The current default is `smoltcp`. `system` is currently TODO. `smoltcp` enables the experimental userspace TCP/IP stack backend.
-- **backend.tun.platform_dns**: Controls platform DNS automation for `tun + smoltcp`. `auto` enables platform-specific DNS setup; `manual` leaves DNS configuration to the user. The default is `auto` on Windows and `manual` on other platforms.
-- **backend.tun.dns_hijack**: Optional DNS hijack target list for `tun + smoltcp`. `any:53` hijacks UDP DNS to any destination; `tcp://any:53` hijacks TCP DNS to any destination. Reserved in-tunnel DNS addresses are always hijacked even if this list is empty.
-- **observability.enable**: Master switch for the observability subsystem. When disabled, AnyMirror keeps plain local tracing output only and does not initialize OTLP trace export.
-- **observability.telemetry.service_name**: OpenTelemetry service name used for exported traces.
-- **observability.telemetry.otlp_endpoint**: OTLP gRPC endpoint used for trace export.
-- **includes:** List of structured `match + action` rules (see Rule Matching Modes below)
+### Rule Matching
 
-### Current TUN Notes
+AnyMirror uses structured `match + action` rules.
 
-- `backend.tun.stack: smoltcp` is still experimental.
-- The smoltcp backend bridges accepted TCP streams into the existing local HTTP/TLS listeners and resolves UDP/TCP DNS directly in-tunnel.
-- The default `backend.tun.dns_hijack` behavior is equivalent to:
-  - `any:53`
-  - `tcp://any:53`
-- The current address reservation model is:
-  - first usable fake IPv4 / IPv6 address: TUN interface address
-  - second usable fake IPv4 / IPv6 address: TUN DNS address
-  - fake-ip allocation starts from the third usable address
-- On Windows, AnyMirror currently configures the TUN adapter DNS automatically to the reserved in-tunnel DNS address.
-- On Linux, `backend.tun.platform_dns: auto` currently configures TUN link DNS through `resolvectl`.
-- The current Linux automation uses `systemd-resolved` link DNS and routing-domain integration, not `nftables` or `iptables` DNS redirect.
-- On macOS, automatic TUN DNS configuration is not implemented in the current CLI runtime; use `manual` or a `NetworkExtension` host.
-- On other non-Windows desktop platforms, you currently need to point the TUN interface DNS at the reserved in-tunnel DNS address yourself.
-- QUIC is still handled by dropping fake-ip UDP/443 traffic to force TCP/TLS fallback.
-- The `system` TUN stack is still TODO.
+- Matchers: `exact`, `prefix`, `host`, `hosts`, `host_suffix`, `ip`, `ip_cidr`
+- Actions: `mirror`, `direct`, `respond`, `plugin`, `reject`
+- `priority` accepts `xhigh`, `high`, `medium`, `low`, `xlow`, or a numeric value
+- `spread: true` allows the winning rule at one priority level to keep propagating to lower-priority levels
+- `respond` supports `body.text`, `body.json`, `body.base64`, and `body.file`
 
-### Current TUN DNS Setup
+For the full rule reference and internal rule-engine model, see [docs/rule-engine.md](docs/rule-engine.md).
 
-- Windows:
-  - AnyMirror configures the TUN adapter DNS automatically.
-  - The TUN backend on Windows also requires `wintun.dll` beside the executable.
-- Linux:
-  - Set `backend.tun.platform_dns: auto` to configure link DNS with `resolvectl`.
-  - The current Linux automation uses `systemd-resolved` link DNS and routing-domain integration, not `nftables` or `iptables` DNS redirect.
-  - `manual` leaves DNS setup to you.
-- macOS and other non-Windows desktop platforms:
-  - AnyMirror does not yet configure interface DNS automatically in the current CLI runtime.
-  - Point the TUN interface DNS at the reserved TUN DNS address:
-    - IPv4: the second usable address in `backend.dns.fake_ipv4_range`
-    - IPv6: the second usable address in `backend.dns.fake_ipv6_range`
-  - Example with the default ranges:
-    - TUN interface address: `198.18.0.1`
-    - TUN DNS address: `198.18.0.2`
-    - fake-ip allocation starts at `198.18.0.3`
-
-### Config Watch And Hot Reload
-
-When started with `--watch-config`, AnyMirror polls the resolved config file, debounces editor
-writes using a short stable window, and then applies either in-place rule replacement or
-component-scoped runtime restarts. For the full reload plan and current limits, see
-[docs/runtime-reload.md](docs/runtime-reload.md).
-
-### DNS Resolver Modes
-
-There are two different DNS layers in AnyMirror:
-
-- `backend.dns.*`: Configures the fake-ip DNS state used by transparent mode. For WinDivert this also backs the local fake DNS listener. For `tun + smoltcp`, DNS is answered in-tunnel instead of through a localhost listener.
-- `upstream.dns.*`: Configures how the proxy resolves the upstream host for one specific mirror rule.
-
-Supported `upstream.dns.mode` values:
-
-- `system`: Use the operating system DNS configuration
-- `udp`: Use a specific plain DNS server over UDP; `upstream.dns.server` is required
-- `dot`: Use a specific DNS-over-TLS server; `upstream.dns.server` is required
-- `doh`: Use a specific DNS-over-HTTPS server; `upstream.dns.server` is required
-
-- `upstream.dns.server` examples:
-  - `udp`: `1.1.1.1` or `1.1.1.1:53`
-  - `dot`: `dns.google`, `dns.google:853`, or `tls://dns.google:853`
-  - `doh`: full URL like `https://dns.google/dns-query`, or a host that will be expanded to `https://<host>/dns-query`
-
-Still not supported:
-
-- Encrypted DNS interception for client-side DoH/DoT in transparent mode
-
-### Rule Matching Modes
-
-For the internal rule-engine model, load path, runtime match path, and compiled index layout, see [docs/rule-engine.md](docs/rule-engine.md).
-
-The rule engine only uses structured `match + action` rules:
-
-```yaml
-includes:
-  - match:
-      host: meta.fabricmc.net
-    action:
-      type: mirror
-      upstream:
-        url: https://bmclapi2.bangbang93.com/fabric-meta/
-
-  - match:
-      host_suffix: neoforged.net
-      path_prefix: /releases/
-    action:
-      type: mirror
-      upstream:
-        url: https://mirror.example.com/neoforge/
-
-  - match:
-      hosts:
-        - api.example.com
-        - download.example.com
-      scheme: https
-    action:
-      type: direct
-
-  - match:
-      host_suffix: telemetry.example.com
-    action:
-      type: reject
-      status: 451
-      message: blocked by policy
-
-  - match:
-      exact: https://api.example.com/health
-    action:
-      type: respond
-      status: 200
-      body:
-        json:
-          ok: true
-          source: anymirror
-
-  - match:
-      ip: 203.0.113.10
-    action:
-      type: direct
-
-  - match:
-      ip_cidr: 203.0.113.0/24
-      port: 443
-    action:
-      type: reject
-      status: 403
-      message: blocked literal IP range
-```
-
-Structured matcher fields:
-
-- `match.exact`: Match one exact URL
-- `match.prefix`: Match one URL prefix
-- `match.host`: Match one host
-- `match.hosts`: Match any host in a list
-- `match.host_suffix`: Match a host suffix such as `example.com`
-- `match.ip`: Match one literal IP host in the request URL
-- `match.ip_cidr`: Match a literal IP host in the request URL by CIDR range
-- `match.scheme`: Optional `http` or `https` restriction for host-based rules
-- `match.port`: Optional port restriction for host- or IP-based rules
-- `match.path_prefix`: Optional path-prefix restriction for host- or IP-based rules
-
-Notes:
-
-- `match.ip` and `match.ip_cidr` only match requests whose URL host is already a literal IP such as `https://203.0.113.10/file`.
-- They do not resolve domain names to real IPs during rule matching.
-- `priority` is optional. It accepts semantic levels `xhigh`, `high`, `medium`, `low`, `xlow`, or a numeric value for finer control. The default is `medium`.
-- The built-in semantic mapping is `xhigh = 200`, `high = 100`, `medium = 0`, `low = -100`, `xlow = -200`.
-- Rules are evaluated by descending `priority` first. Inside the same priority, the earliest matching rule in the config wins.
-- `spread: true` allows the winner of one priority level to keep propagating to lower-priority levels. If no lower-priority rule overrides it, that spread rule still applies.
-
-Structured actions:
-
-- `action.type: mirror`: Rewrite and forward to the configured upstream
-- `action.type: direct`: Keep the original destination and forward directly
-- `action.type: respond`: Return a local static response without contacting the upstream
-- `action.type: reject`: Return a local reject response without contacting the upstream
-
-`action.type: respond` currently supports:
-
-- `status`
-- `headers`
-- `content_type`
-- `body.text`
-- `body.json`
-- `body.base64`
-- `body.file`
-
-`body.file` is resolved relative to the config file directory when a relative path is used.
-
-## Architecture
-The current transparent pipeline is:
-
-```text
-FakeDnsServer -> Intercept Backend -> Local Proxy -> Mirror/Direct upstream
-```
-
-For the full transparent architecture, component responsibilities, and request flow, see
-[docs/architecture.md](docs/architecture.md).
-
-For plugin lifecycle, request/response action overrides, and response flow, see
-[docs/plugin-flow.md](docs/plugin-flow.md).
-
-## Technical Details
-
-- **IPv4 & IPv6 Dual-Stack Support:**
-  Transparent proxy mode captures both IPv4 and IPv6 traffic automatically, ensuring complete coverage in modern hybrid network environments.
-
-- **Full HTTP Capabilities:**
-  Seamless streaming of all HTTP methods (GET, POST, PUT, DELETE, etc.) including high-performance bidirectional request and response body forwarding powered by Hyper.
-
-- **WinDivert modes (current intercept backend):**
-  - `Network`: Captures traffic originating from or destined to the local host
-  - `NetworkForward`: Captures traffic being forwarded through the host (enables gateway functionality for WSL, virtual machines, USB tethering, etc.)
-
-- **Socket implementation:** Async I/O via Tokio with Hyper for HTTP/2 support; Rustls for TLS processing
-
-- **Port allocation:**
-  - Port 8787: HTTP proxy listener
-  - Port 8788: Local TLS interception listener used by transparent mode (auto-selected as `listen + 1` unless `tls_port` is set)
-
-For explicit mode, clients should only point their HTTP/HTTPS proxy settings at `listen` (for
-example `127.0.0.1:8787`). `tls_port` is not an explicit HTTPS proxy port.
-
-When the observability subsystem is enabled, the same listener also exposes:
+## Debug Endpoints
 
 - `GET /state`: current in-memory runtime snapshot
 - `GET /events`: recent in-memory runtime events
-
-The same listener also exposes a rule-debugging endpoint:
-
 - `GET /rules/explain?url=<url>`: explain candidate rule evaluation by `priority`, config order, and `spread`
+
+In explicit mode, clients should point both HTTP and HTTPS proxy settings at `listen` (for example `127.0.0.1:8787`). `tls_port` is only used by transparent mode.
 
 ## Project Status
 

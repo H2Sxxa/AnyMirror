@@ -110,7 +110,8 @@ Implementation files:
 - Exact match buckets use boxed slices instead of growable vectors.
 - Host-suffix matching and DNS suffix matching share one trie.
 - Prefix, host-suffix, and CIDR tries keep `min_rule_index` for early pruning.
-- Rule order still wins. Earlier config rules have higher priority.
+- Candidates are collected once and then evaluated by descending `priority`.
+- Inside the same priority level, earlier config rules still win.
 
 ## Current Rule Semantics
 
@@ -128,9 +129,28 @@ Supported actions:
 
 - `mirror`
 - `direct`
+- `respond`
+- `plugin`
 - `reject`
 
 Notes:
 
 - `ip` and `ip_cidr` only match requests whose URL host is already a literal IP.
 - Rule matching does not resolve a domain to a real IP before matching.
+- `priority` is optional. It accepts semantic levels `xhigh`, `high`, `medium`,
+  `low`, `xlow`, or a numeric value.
+- The built-in semantic mapping is:
+  - `xhigh = 200`
+  - `high = 100`
+  - `medium = 0`
+  - `low = -100`
+  - `xlow = -200`
+- Rules are evaluated by descending `priority` first.
+- Inside the same priority level, the earliest matching rule wins.
+- `spread: true` allows the winner of one priority level to keep propagating to
+  lower-priority levels.
+- `respond` supports:
+  - `body.text`
+  - `body.json`
+  - `body.base64`
+  - `body.file`
