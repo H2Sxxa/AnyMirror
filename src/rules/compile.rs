@@ -1,4 +1,10 @@
 use anyhow::{Context, Result, ensure};
+use axum::http::{
+    HeaderMap, HeaderName, HeaderValue,
+    header::{CONTENT_LENGTH, CONTENT_TYPE},
+};
+use base64::Engine as _;
+use bytes::Bytes;
 use ipnet::IpNet;
 use url::Url;
 
@@ -7,11 +13,12 @@ use super::matching::{
 };
 use super::model::{
     DnsMode, DnsPlan, HostPattern, HostRuleMatcher, IpPattern, IpRuleMatcher, RejectRuleAction,
-    Rule, RuleAction, RuleMatcher, UpstreamPlan,
+    RespondRuleAction, Rule, RuleAction, RuleMatcher, UpstreamPlan,
 };
 use super::pool::RuleSet;
 use super::schema::{
-    DnsPlanSchema, RuleActionSchema, RuleMatcherSchema, RuleSchema, UpstreamPlanSchema,
+    DnsPlanSchema, RespondBodySchema, RuleActionSchema, RuleMatcherSchema, RuleSchema,
+    UpstreamPlanSchema,
 };
 
 impl TryFrom<Vec<RuleSchema>> for RuleSet {
@@ -169,6 +176,17 @@ impl TryFrom<RuleActionSchema> for RuleAction {
                 Ok(Self::Mirror(UpstreamPlan::try_from(upstream)?))
             }
             RuleActionSchema::Direct => Ok(Self::Direct),
+            RuleActionSchema::Respond {
+                status,
+                headers,
+                content_type,
+                body,
+            } => Ok(Self::Respond(compile_respond_action(
+                status,
+                headers.unwrap_or_default(),
+                content_type,
+                body,
+            )?)),
             RuleActionSchema::Plugin { name } => {
                 ensure!(
                     !name.trim().is_empty(),
@@ -215,6 +233,109 @@ impl TryFrom<UpstreamPlanSchema> for UpstreamPlan {
         plan.validate()?;
         Ok(plan)
     }
+}
+
+fn compile_respond_action(
+    status: Option<u16>,
+    headers: std::collections::HashMap<String, String>,
+    content_type: Option<String>,
+    body: Option<RespondBodySchema>,
+) -> Result<RespondRuleAction> {
+    let status = status.unwrap_or(200);
+    ensure!(
+        (100..=599).contains(&status),
+        "respond.status must be a valid HTTP status code, got {}",
+        status
+    );
+
+    let mut compiled_headers = HeaderMap::new();
+    for (name, value) in headers {
+        let header_name = HeaderName::from_bytes(name.as_bytes())
+            .with_context(|| format!("invalid respond header name `{name}`"))?;
+        ensure!(
+            header_name != CONTENT_LENGTH,
+            "respond.headers must not contain `content-length`; it is computed automatically"
+        );
+        ensure!(
+            header_name != CONTENT_TYPE,
+            "respond.headers must not contain `content-type`; use respond.content_type instead"
+        );
+        let header_value = HeaderValue::from_str(&value)
+            .with_context(|| format!("invalid respond header value for `{header_name}`"))?;
+        compiled_headers.insert(header_name, header_value);
+    }
+
+    let compiled_body = compile_respond_body(body)?;
+
+    if let Some(content_type) = content_type {
+        let trimmed = content_type.trim();
+        ensure!(
+            !trimmed.is_empty(),
+            "respond.content_type must not be empty"
+        );
+        compiled_headers.insert(
+            CONTENT_TYPE,
+            HeaderValue::from_str(trimmed)
+                .with_context(|| format!("invalid respond.content_type `{trimmed}`"))?,
+        );
+    } else if let Some(content_type) = compiled_body.default_content_type {
+        compiled_headers.insert(CONTENT_TYPE, HeaderValue::from_static(content_type));
+    }
+
+    Ok(RespondRuleAction {
+        status,
+        headers: compiled_headers,
+        body: compiled_body.bytes,
+    })
+}
+
+struct CompiledRespondBody {
+    bytes: Bytes,
+    default_content_type: Option<&'static str>,
+}
+
+fn compile_respond_body(body: Option<RespondBodySchema>) -> Result<CompiledRespondBody> {
+    let Some(body) = body else {
+        return Ok(CompiledRespondBody {
+            bytes: Bytes::new(),
+            default_content_type: None,
+        });
+    };
+
+    let source_count = usize::from(body.text.is_some())
+        + usize::from(body.json.is_some())
+        + usize::from(body.base64.is_some());
+    ensure!(
+        source_count == 1,
+        "respond.body must contain exactly one of text, json, or base64"
+    );
+
+    if let Some(text) = body.text {
+        return Ok(CompiledRespondBody {
+            bytes: Bytes::from(text.into_bytes()),
+            default_content_type: Some("text/plain; charset=utf-8"),
+        });
+    }
+
+    if let Some(json) = body.json {
+        let bytes = serde_json::to_vec(&json).context("failed to serialize respond.body.json")?;
+        return Ok(CompiledRespondBody {
+            bytes: Bytes::from(bytes),
+            default_content_type: Some("application/json"),
+        });
+    }
+
+    let encoded = body
+        .base64
+        .expect("validated by source_count and previous branches");
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded.as_bytes())
+        .context("failed to decode respond.body.base64")?;
+
+    Ok(CompiledRespondBody {
+        bytes: Bytes::from(decoded),
+        default_content_type: Some("application/octet-stream"),
+    })
 }
 
 impl TryFrom<DnsPlanSchema> for DnsPlan {

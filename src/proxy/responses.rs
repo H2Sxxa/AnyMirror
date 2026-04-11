@@ -1,12 +1,13 @@
 use axum::{
     Json,
-    http::StatusCode,
+    body::Body,
+    http::{HeaderValue, StatusCode, header::CONTENT_LENGTH},
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
 use tokio::signal;
 
-use crate::rules::model::{RuleActionKind, RuleKind};
+use crate::rules::model::{RespondRuleAction, RuleActionKind, RuleKind};
 use crate::rules::pool::MatchedRule;
 
 #[derive(Debug, Deserialize)]
@@ -53,9 +54,30 @@ pub(crate) fn rule_action_name(matched: MatchedRule<'_>) -> &'static str {
     match matched.action_kind() {
         RuleActionKind::Mirror => "mirror",
         RuleActionKind::Direct => "direct",
+        RuleActionKind::Respond => "respond",
         RuleActionKind::Plugin => "plugin",
         RuleActionKind::Reject => "reject",
     }
+}
+
+pub(crate) fn respond_response(action: &RespondRuleAction) -> Response {
+    let status = StatusCode::from_u16(action.status).expect("validated respond status");
+    let mut response = Response::builder().status(status);
+    let response_headers = response.headers_mut().expect("response builder is valid");
+
+    for (name, value) in &action.headers {
+        response_headers.append(name, value.clone());
+    }
+
+    response_headers.insert(
+        CONTENT_LENGTH,
+        HeaderValue::from_str(&action.body.len().to_string())
+            .expect("response content length should be valid"),
+    );
+
+    response
+        .body(Body::from(action.body.clone()))
+        .expect("response body build should not fail")
 }
 
 pub(crate) fn reject_response(status: u16, message: &str) -> Response {

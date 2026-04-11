@@ -1,3 +1,4 @@
+use axum::http::header::CONTENT_TYPE;
 use url::Url;
 
 use crate::rules::model::{
@@ -224,6 +225,60 @@ action:
     let reject = resolved.reject().unwrap();
     assert_eq!(reject.status, 451);
     assert_eq!(reject.message, "blocked for policy reasons");
+}
+
+#[test]
+fn respond_action_returns_local_response_plan() {
+    let rule_schema: RuleSchema = serde_yaml::from_str(
+        r#"
+match:
+  host: api.example.com
+action:
+  type: respond
+  status: 200
+  body:
+    json:
+      ok: true
+"#,
+    )
+    .unwrap();
+    let rules = RuleSet::try_from(vec![rule_schema]).unwrap();
+    let original = Url::parse("https://api.example.com/ping").unwrap();
+
+    let resolved = rules.resolve(&original).unwrap();
+
+    assert_eq!(resolved.action_kind(), RuleActionKind::Respond);
+    let respond = resolved.respond().unwrap();
+    assert_eq!(respond.status, 200);
+    assert_eq!(
+        respond.headers.get(CONTENT_TYPE).unwrap(),
+        "application/json"
+    );
+    assert_eq!(respond.body.as_ref(), br#"{"ok":true}"#);
+}
+
+#[test]
+fn respond_action_requires_single_body_source() {
+    let rule_schema: RuleSchema = serde_yaml::from_str(
+        r#"
+match:
+  host: api.example.com
+action:
+  type: respond
+  body:
+    text: hello
+    base64: aGVsbG8=
+"#,
+    )
+    .unwrap();
+
+    let error = Rule::try_from(rule_schema).unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("respond.body must contain exactly one of text, json, or base64")
+    );
 }
 
 #[test]

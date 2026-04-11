@@ -351,7 +351,10 @@ impl PluginRegistry {
             .iter()
             .filter_map(|rule| match &rule.action {
                 RuleAction::Plugin(plugin_name) => Some(plugin_name.clone()),
-                RuleAction::Mirror(_) | RuleAction::Direct | RuleAction::Reject(_) => None,
+                RuleAction::Mirror(_)
+                | RuleAction::Direct
+                | RuleAction::Respond(_)
+                | RuleAction::Reject(_) => None,
             })
             .collect::<HashSet<_>>();
 

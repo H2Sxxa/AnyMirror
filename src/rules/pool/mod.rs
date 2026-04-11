@@ -8,7 +8,9 @@ use arc_swap::ArcSwap;
 use url::Url;
 
 use self::compiled::CompiledRuleIndex;
-use super::model::{RejectRuleAction, ResolvedRuleAction, Rule, RuleActionKind, UpstreamPlan};
+use super::model::{
+    RejectRuleAction, ResolvedRuleAction, RespondRuleAction, Rule, RuleActionKind, UpstreamPlan,
+};
 
 #[derive(Debug, Clone)]
 pub struct RuleSet {
@@ -89,6 +91,10 @@ impl MatchedRule<'_> {
         self.action.reject()
     }
 
+    pub fn respond(&self) -> Option<&RespondRuleAction> {
+        self.action.respond()
+    }
+
     pub fn plugin(&self) -> Option<&str> {
         self.action.plugin()
     }
@@ -99,6 +105,7 @@ impl ResolvedRuleAction {
         match self {
             Self::Mirror(_) => RuleActionKind::Mirror,
             Self::Direct(_) => RuleActionKind::Direct,
+            Self::Respond(_) => RuleActionKind::Respond,
             Self::Plugin(_) => RuleActionKind::Plugin,
             Self::Reject(_) => RuleActionKind::Reject,
         }
@@ -107,21 +114,28 @@ impl ResolvedRuleAction {
     pub fn upstream(&self) -> Option<&UpstreamPlan> {
         match self {
             Self::Mirror(upstream) | Self::Direct(upstream) => Some(upstream),
-            Self::Plugin(_) | Self::Reject(_) => None,
+            Self::Respond(_) | Self::Plugin(_) | Self::Reject(_) => None,
         }
     }
 
     pub fn reject(&self) -> Option<&RejectRuleAction> {
         match self {
             Self::Reject(reject) => Some(reject),
-            Self::Mirror(_) | Self::Direct(_) | Self::Plugin(_) => None,
+            Self::Mirror(_) | Self::Direct(_) | Self::Respond(_) | Self::Plugin(_) => None,
+        }
+    }
+
+    pub fn respond(&self) -> Option<&RespondRuleAction> {
+        match self {
+            Self::Respond(respond) => Some(respond),
+            Self::Mirror(_) | Self::Direct(_) | Self::Plugin(_) | Self::Reject(_) => None,
         }
     }
 
     pub fn plugin(&self) -> Option<&str> {
         match self {
             Self::Plugin(plugin) => Some(plugin.as_str()),
-            Self::Mirror(_) | Self::Direct(_) | Self::Reject(_) => None,
+            Self::Mirror(_) | Self::Direct(_) | Self::Respond(_) | Self::Reject(_) => None,
         }
     }
 }

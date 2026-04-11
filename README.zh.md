@@ -358,6 +358,7 @@ includes:
 
 - `action.type: mirror`：改写并转发到配置的 upstream
 - `action.type: direct`：保留原始目标并直接转发
+- `action.type: respond`：本地直接返回静态响应，不再访问 upstream
 - `action.type: reject`：本地直接返回拒绝响应，不再访问 upstream
 
 ## 架构设计

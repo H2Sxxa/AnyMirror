@@ -364,6 +364,7 @@ Structured actions:
 
 - `action.type: mirror`: Rewrite and forward to the configured upstream
 - `action.type: direct`: Keep the original destination and forward directly
+- `action.type: respond`: Return a local static response without contacting the upstream
 - `action.type: reject`: Return a local reject response without contacting the upstream
 
 ## Architecture

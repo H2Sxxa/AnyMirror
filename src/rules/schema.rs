@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::Deserialize;
 
 use crate::rules::model::DnsMode;
@@ -30,6 +32,12 @@ pub enum RuleActionSchema {
         upstream: UpstreamPlanSchema,
     },
     Direct,
+    Respond {
+        status: Option<u16>,
+        headers: Option<HashMap<String, String>>,
+        content_type: Option<String>,
+        body: Option<RespondBodySchema>,
+    },
     Plugin {
         name: String,
     },
@@ -37,6 +45,13 @@ pub enum RuleActionSchema {
         status: Option<u16>,
         message: Option<String>,
     },
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RespondBodySchema {
+    pub text: Option<String>,
+    pub json: Option<serde_json::Value>,
+    pub base64: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

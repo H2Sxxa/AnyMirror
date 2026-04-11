@@ -11,7 +11,7 @@ use url::Url;
 use super::{
     executors::UpstreamExecutor,
     proxy_response::{build_passthrough_response, build_proxy_response},
-    responses::{json_error, reject_response, rule_action_name, rule_kind_name},
+    responses::{json_error, reject_response, respond_response, rule_action_name, rule_kind_name},
     state::AppState,
 };
 use crate::rules::model::{RuleActionKind, UpstreamPlan};
@@ -66,6 +66,16 @@ pub(crate) async fn forward_request<E: UpstreamExecutor>(
                     );
                     return reject_response(reject.status, &reject.message);
                 }
+                if let Some(respond) = matched.respond() {
+                    Span::current().record("response_kind", "respond");
+                    Span::current().record("response_status", respond.status);
+                    tracing::info!(
+                        original_url = %original,
+                        respond_status = respond.status,
+                        "{message}"
+                    );
+                    return respond_response(respond);
+                }
                 if let Some(plugin_name) = matched.plugin() {
                     Span::current().record("plugin", plugin_name);
                     return plugin::forward_plugin_request(
@@ -111,6 +121,9 @@ pub(crate) async fn forward_request<E: UpstreamExecutor>(
                     RuleActionKind::Direct => {
                         Span::current().record("response_kind", "direct");
                         build_passthrough_response(executed.response, source, original.as_str())
+                    }
+                    RuleActionKind::Respond => {
+                        unreachable!("respond returns before upstream execution")
                     }
                     RuleActionKind::Plugin => {
                         unreachable!("plugin actions resolve before upstream execution")
@@ -209,6 +222,16 @@ pub(crate) async fn forward_intercepted_request<E: UpstreamExecutor>(
                     );
                     return reject_response(reject.status, &reject.message);
                 }
+                if let Some(respond) = matched.respond() {
+                    Span::current().record("response_kind", "respond");
+                    Span::current().record("response_status", respond.status);
+                    tracing::info!(
+                        original_url = %original,
+                        respond_status = respond.status,
+                        "{message}"
+                    );
+                    return respond_response(respond);
+                }
                 if let Some(plugin_name) = matched.plugin() {
                     Span::current().record("plugin", plugin_name);
                     return plugin::forward_plugin_request(
@@ -258,6 +281,9 @@ pub(crate) async fn forward_intercepted_request<E: UpstreamExecutor>(
                             Some(source),
                             original.as_str(),
                         )
+                    }
+                    RuleActionKind::Respond => {
+                        unreachable!("respond returns before upstream execution")
                     }
                     RuleActionKind::Plugin => {
                         unreachable!("plugin actions resolve before upstream execution")
@@ -326,11 +352,15 @@ fn rule_action_message(action_kind: RuleActionKind, transparent: bool) -> &'stat
         (false, RuleActionKind::Direct) => {
             "Forwarding request directly due to matching direct rule"
         }
+        (false, RuleActionKind::Respond) => "Returning local response due to matching respond rule",
         (false, RuleActionKind::Plugin) => "Resolving request through plugin action",
         (false, RuleActionKind::Reject) => "Rejecting request due to matching reject rule",
         (true, RuleActionKind::Mirror) => "Forwarding transparent request to upstream mirror",
         (true, RuleActionKind::Direct) => {
             "Forwarding transparent request directly due to matching direct rule"
+        }
+        (true, RuleActionKind::Respond) => {
+            "Returning local response due to matching transparent respond rule"
         }
         (true, RuleActionKind::Plugin) => "Resolving transparent request through plugin action",
         (true, RuleActionKind::Reject) => {

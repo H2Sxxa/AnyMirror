@@ -1,3 +1,5 @@
+use axum::http::HeaderMap;
+use bytes::Bytes;
 use std::net::IpAddr;
 
 use ipnet::IpNet;
@@ -52,6 +54,7 @@ pub enum IpPattern {
 pub enum RuleAction {
     Mirror(UpstreamPlan),
     Direct,
+    Respond(RespondRuleAction),
     Plugin(String),
     Reject(RejectRuleAction),
 }
@@ -60,6 +63,7 @@ pub enum RuleAction {
 pub enum RuleActionKind {
     Mirror,
     Direct,
+    Respond,
     Plugin,
     Reject,
 }
@@ -68,6 +72,7 @@ pub enum RuleActionKind {
 pub enum ResolvedRuleAction {
     Mirror(UpstreamPlan),
     Direct(UpstreamPlan),
+    Respond(RespondRuleAction),
     Plugin(String),
     Reject(RejectRuleAction),
 }
@@ -92,6 +97,13 @@ pub struct DnsPlan {
 pub struct RejectRuleAction {
     pub status: u16,
     pub message: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct RespondRuleAction {
+    pub status: u16,
+    pub headers: HeaderMap,
+    pub body: Bytes,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
