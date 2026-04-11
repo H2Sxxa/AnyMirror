@@ -100,6 +100,7 @@ pub fn run_transparent_tun_smoltcp_runtime(
     let (stack, runner, udp_socket, tcp_listener) = StackBuilder::default()
         .enable_tcp(true)
         .enable_udp(true)
+        .enable_icmp(true)
         .build()
         .context("failed to initialize netstack-smoltcp")?;
     let Some(runner) = runner else {
