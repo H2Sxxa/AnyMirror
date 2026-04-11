@@ -1,0 +1,175 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN_NAME: anymirror
+  WINDIVERT_VERSION: 2.2.2
+
+jobs:
+  verify:
+    name: Verify release build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build outputs
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run test suite
+        run: cargo test --locked --quiet
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: verify
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary_ext: ""
+          - runner: macos-13
+            target: x86_64-apple-darwin
+            binary_ext: ""
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary_ext: .exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust build outputs
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --locked --release --target ${{ matrix.target }}
+
+      - name: Prepare package directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          package_dir="dist/${BIN_NAME}-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir -p "${package_dir}"
+
+          cp "target/${{ matrix.target }}/release/${BIN_NAME}${{ matrix.binary_ext }}" "${package_dir}/"
+          cp README.md README.zh.md LICENSE config.yml "${package_dir}/"
+
+      - name: Download official WinDivert runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archiveName = "WinDivert-${env:WINDIVERT_VERSION}-A.zip"
+          $downloadUrl = "https://github.com/basil00/WinDivert/releases/download/v${env:WINDIVERT_VERSION}/$archiveName"
+          $archivePath = Join-Path $env:RUNNER_TEMP $archiveName
+          $extractDir = Join-Path $env:RUNNER_TEMP "windivert"
+
+          Invoke-WebRequest -Uri $downloadUrl -OutFile $archivePath
+          Expand-Archive -LiteralPath $archivePath -DestinationPath $extractDir -Force
+
+          $packageDir = "dist/${env:BIN_NAME}-${env:GITHUB_REF_NAME}-${{ matrix.target }}"
+          $dllPath = Get-ChildItem -Path $extractDir -Recurse -Filter WinDivert.dll | Select-Object -First 1 -ExpandProperty FullName
+          $sysPath = Get-ChildItem -Path $extractDir -Recurse -Filter WinDivert64.sys | Select-Object -First 1 -ExpandProperty FullName
+
+          Copy-Item -LiteralPath $dllPath -Destination $packageDir
+          Copy-Item -LiteralPath $sysPath -Destination $packageDir
+
+      - name: Archive package (tar.gz)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          archive_base="${BIN_NAME}-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          tar -C dist -czf "dist/${archive_base}.tar.gz" "${archive_base}"
+
+      - name: Archive package (zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archiveBase = "${env:BIN_NAME}-${env:GITHUB_REF_NAME}-${{ matrix.target }}"
+          Compress-Archive -Path "dist/$archiveBase/*" -DestinationPath "dist/$archiveBase.zip" -Force
+
+      - name: Upload packaged artifact
+        if: runner.os != 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BIN_NAME }}-${{ github.ref_name }}-${{ matrix.target }}
+          path: dist/${{ env.BIN_NAME }}-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload packaged artifact
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BIN_NAME }}-${{ github.ref_name }}-${{ matrix.target }}
+          path: dist/${{ env.BIN_NAME }}-${{ github.ref_name }}-${{ matrix.target }}.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Flatten downloaded artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          mkdir -p release
+          for artifact_dir in dist/*; do
+            for file in "${artifact_dir}"/*; do
+              mv "${file}" release/
+            done
+          done
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd release
+          sha256sum * > SHA256SUMS.txt
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: AnyMirror ${{ github.ref_name }}
+          files: release/*
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
