@@ -48,7 +48,7 @@ socket2 = "0.6.3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "io-util", "net", "time", "fs"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", default-features = false, features = ["trace"] }
+tower-http = { version = "0.7", default-features = false, features = ["trace"] }
 tracing = "0.1"
 tracing-opentelemetry = "0.32.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
