@@ -13,7 +13,7 @@ base64 = "0.23"
 bytes = "1.10.1"
 cfonts = "1.3.0"
 clap = { version = "4", default-features = false, features = ["derive", "std", "help"] }
-etherparse = { version = "0.20", default-features = false, features = ["std"] }
+etherparse = { version = "0.21", default-features = false, features = ["std"] }
 futures = "0.3"
 hickory-proto = "0.26"
 hickory-resolver = { version = "0.26", features = ["https-ring", "tls-ring"] }
